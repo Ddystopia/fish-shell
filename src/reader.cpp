@@ -1781,7 +1781,7 @@ void reader_data_t::delete_char(bool backward) {
     } while (width == 0 && pos > 0);
     erase_substring(el, pos, pos_end - pos);
     update_buff_pos(el);
-    suppress_autosuggestion = true;
+    // suppress_autosuggestion = true;
 }
 
 /// Insert the characters of the string into the command line buffer and print them to the screen
