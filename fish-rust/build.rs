@@ -26,6 +26,7 @@ fn main() -> miette::Result<()> {
         "src/ffi_init.rs",
         "src/ffi_tests.rs",
         "src/future_feature_flags.rs",
+        "src/job_group.rs",
         "src/parse_constants.rs",
         "src/redirection.rs",
         "src/smoke.rs",
@@ -40,6 +41,7 @@ fn main() -> miette::Result<()> {
         .include(&fish_src_dir)
         .include(&fish_build_dir) // For config.h
         .include(&cxx_include_dir) // For cxx.h
+        .flag("-Wno-comment")
         .compile("fish-rust");
 
     // Emit autocxx junk.
@@ -49,6 +51,7 @@ fn main() -> miette::Result<()> {
         .custom_gendir(autocxx_gen_dir.into())
         .build()?;
     b.flag_if_supported("-std=c++11")
+        .flag("-Wno-comment")
         .compile("fish-rust-autocxx");
     for file in source_files {
         println!("cargo:rerun-if-changed={file}");

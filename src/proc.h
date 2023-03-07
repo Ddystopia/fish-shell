@@ -18,7 +18,6 @@
 #include <vector>
 
 #include "common.h"
-#include "job_group.h"
 #include "maybe.h"
 #include "parse_tree.h"
 #include "redirection.h"
@@ -58,6 +57,7 @@ namespace ast {
 struct statement_t;
 }
 
+struct job_group_t;
 using job_group_ref_t = std::shared_ptr<job_group_t>;
 
 /// A proc_status_t is a value type that encapsulates logic around exited vs stopped vs signaled,
@@ -540,6 +540,14 @@ class job_t : noncopyable_t {
 
     /// autocxx junk.
     RustFFIProcList ffi_processes() const;
+
+    /// autocxx junk.
+    const job_group_t &ffi_group() const;
+
+    /// autocxx junk.
+    /// The const is a lie and is only necessary since at the moment cxx's SharedPtr doesn't support
+    /// getting a mutable reference.
+    bool ffi_resume() const;
 };
 using job_ref_t = std::shared_ptr<job_t>;
 

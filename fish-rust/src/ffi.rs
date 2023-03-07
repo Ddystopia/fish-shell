@@ -53,6 +53,7 @@ include_cpp! {
     generate!("wildcard_match")
     generate!("wgettext_ptr")
 
+    generate!("block_t")
     generate!("parser_t")
     generate!("job_t")
     generate!("process_t")
@@ -90,6 +91,8 @@ include_cpp! {
     generate!("re::regex_t")
     generate!("re::regex_result_ffi")
     generate!("re::try_compile_ffi")
+    generate!("wcs2string")
+    generate!("str2wcstring")
 }
 
 impl parser_t {
@@ -163,6 +166,7 @@ pub trait Repin {
 }
 
 // Implement Repin for our types.
+impl Repin for block_t {}
 impl Repin for env_stack_t {}
 impl Repin for io_streams_t {}
 impl Repin for job_t {}

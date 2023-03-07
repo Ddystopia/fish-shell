@@ -800,146 +800,6 @@ static void test_tokenizer() {
         err(L"redirection_type_for_string failed on line %ld", (long)__LINE__);
 }
 
-static void test_fd_monitor() {
-    say(L"Testing fd_monitor");
-
-    // Helper to make an item which counts how many times its callback is invoked.
-    struct item_maker_t : public noncopyable_t {
-        std::atomic<bool> did_timeout{false};
-        std::atomic<size_t> length_read{0};
-        std::atomic<size_t> pokes{0};
-        std::atomic<size_t> total_calls{0};
-        uint64_t item_id{0};
-        bool always_exit{false};
-        std::unique_ptr<rust::Box<fd_monitor_item_t>> item;
-        autoclose_fd_t writer;
-
-        void callback(autoclose_fd_t2 &fd, item_wake_reason_t reason) {
-            bool was_closed = false;
-            switch (reason) {
-                case item_wake_reason_t::Timeout:
-                    this->did_timeout = true;
-                    break;
-                case item_wake_reason_t::Poke:
-                    this->pokes += 1;
-                    break;
-                case item_wake_reason_t::Readable:
-                    char buff[4096];
-                    ssize_t amt = read(fd.fd(), buff, sizeof buff);
-                    this->length_read += amt;
-                    was_closed = (amt == 0);
-                    break;
-            }
-            total_calls += 1;
-            if (always_exit || was_closed) {
-                fd.close();
-            }
-        }
-
-        static void trampoline(autoclose_fd_t2 &fd, item_wake_reason_t reason, uint8_t *param) {
-            auto &instance = *(item_maker_t *)(param);
-            instance.callback(fd, reason);
-        }
-
-        explicit item_maker_t(uint64_t timeout_usec) {
-            auto pipes = make_autoclose_pipes().acquire();
-            writer = std::move(pipes.write);
-            item = std::make_unique<rust::Box<fd_monitor_item_t>>(
-                make_fd_monitor_item_t(pipes.read.acquire(), timeout_usec,
-                                       (uint8_t *)item_maker_t::trampoline, (uint8_t *)this));
-        }
-
-        // Write 42 bytes to our write end.
-        void write42() const {
-            char buff[42] = {0};
-            (void)write_loop(writer.fd(), buff, sizeof buff);
-        }
-    };
-
-    constexpr uint64_t usec_per_msec = 1000;
-
-    // Items which will never receive data or be called back.
-    item_maker_t item_never(kNoTimeout);
-    item_maker_t item_hugetimeout(100000000LLU * usec_per_msec);
-
-    // Item which should get no data, and time out.
-    item_maker_t item0_timeout(16 * usec_per_msec);
-
-    // Item which should get exactly 42 bytes, then time out.
-    item_maker_t item42_timeout(16 * usec_per_msec);
-
-    // Item which should get exactly 42 bytes, and not time out.
-    item_maker_t item42_nottimeout(kNoTimeout);
-
-    // Item which should get 42 bytes, then get notified it is closed.
-    item_maker_t item42_thenclose(16 * usec_per_msec);
-
-    // Item which gets one poke.
-    item_maker_t item_pokee(kNoTimeout);
-
-    // Item which should be called back once.
-    item_maker_t item_oneshot(16 * usec_per_msec);
-    item_oneshot.always_exit = true;
-
-    {
-        auto monitor = make_fd_monitor_t();
-        for (item_maker_t *item :
-             {&item_never, &item_hugetimeout, &item0_timeout, &item42_timeout, &item42_nottimeout,
-              &item42_thenclose, &item_pokee, &item_oneshot}) {
-            item->item_id = monitor->add(std::move(*(std::move(item->item))));
-        }
-        item42_timeout.write42();
-        item42_nottimeout.write42();
-        item42_thenclose.write42();
-        item42_thenclose.writer.close();
-        item_oneshot.write42();
-        monitor->poke_item(item_pokee.item_id);
-
-        // May need to loop here to ensure our fd_monitor gets scheduled - see #7699.
-        for (int i = 0; i < 100; i++) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(84));
-            if (item0_timeout.did_timeout) {
-                break;
-            }
-        }
-    }
-
-    do_test(!item_never.did_timeout);
-    do_test(item_never.length_read == 0);
-    do_test(item_never.pokes == 0);
-
-    do_test(!item_hugetimeout.did_timeout);
-    do_test(item_hugetimeout.length_read == 0);
-    do_test(item_hugetimeout.pokes == 0);
-
-    do_test(item0_timeout.length_read == 0);
-    do_test(item0_timeout.did_timeout);
-    do_test(item0_timeout.pokes == 0);
-
-    do_test(item42_timeout.length_read == 42);
-    do_test(item42_timeout.did_timeout);
-    do_test(item42_timeout.pokes == 0);
-
-    do_test(item42_nottimeout.length_read == 42);
-    do_test(!item42_nottimeout.did_timeout);
-    do_test(item42_nottimeout.pokes == 0);
-
-    do_test(item42_thenclose.did_timeout == false);
-    do_test(item42_thenclose.length_read == 42);
-    do_test(item42_thenclose.total_calls == 2);
-    do_test(item42_thenclose.pokes == 0);
-
-    do_test(!item_oneshot.did_timeout);
-    do_test(item_oneshot.length_read == 42);
-    do_test(item_oneshot.total_calls == 1);
-    do_test(item_oneshot.pokes == 0);
-
-    do_test(!item_pokee.did_timeout);
-    do_test(item_pokee.length_read == 0);
-    do_test(item_pokee.total_calls == 1);
-    do_test(item_pokee.pokes == 1);
-}
-
 static void test_iothread() {
     say(L"Testing iothreads");
     std::atomic<int> shared_int{0};
@@ -1530,12 +1390,6 @@ static void test_indents() {
              0, "\nend"                                           //
     );
 
-    tests.clear();
-    add_test(&tests,                            //
-             0, "echo 'continuation line' \\",  //
-             1, "\ncont",                       //
-             0, "\n"                            //
-    );
     int test_idx = 0;
     for (const indent_test_t &test : tests) {
         // Construct the input text and expected indents.
@@ -2389,6 +2243,10 @@ static void test_ifind() {
     do_test(ifind(std::string{"alphab"}, std::string{"balpha"}) == std::string::npos);
     do_test(ifind(std::string{"balpha"}, std::string{"lPh"}) == 2);
     do_test(ifind(std::string{"balpha"}, std::string{"Plh"}) == std::string::npos);
+    // FIXME: This should match instead of returning npos
+    // If this test fails, that means you fixed it!
+    // (unfortunately I don't believe we really have an "expected failure" state?)
+    do_test(ifind(wcstring{L"echo Ö"}, wcstring{L"ö"}) == wcstring::npos);
 }
 
 static void test_ifind_fuzzy() {
@@ -5710,13 +5568,6 @@ static void test_highlighting() {
     });
 #endif
 
-    highlight_tests.clear();
-    highlight_tests.push_back({
-        {L"echo", highlight_role_t::command},
-        {L"stuff", highlight_role_t::param},
-        {L"# comment", highlight_role_t::comment},
-    });
-
     bool saved_flag = feature_test(feature_flag_t::ampersand_nobg_in_token);
     mutable_fish_features()->set(feature_flag_t::ampersand_nobg_in_token, true);
     for (const highlight_component_list_t &components : highlight_tests) {
@@ -5834,34 +5685,6 @@ static void test_wwrite_to_fd() {
         do_test(read_amt >= 0 && static_cast<size_t>(read_amt) == expected_size);
     }
     (void)remove(t);
-}
-
-static void test_pcre2_escape() {
-    say(L"Testing escaping strings as pcre2 literals");
-    // plain text should not be needlessly escaped
-    auto input = L"hello world!";
-    auto escaped = escape_string(input, 0, STRING_STYLE_REGEX);
-    if (escaped != input) {
-        err(L"Input string %ls unnecessarily PCRE2 escaped as %ls", input, escaped.c_str());
-    }
-
-    // all the following are intended to be ultimately matched literally - even if they don't look
-    // like that's the intent - so we escape them.
-    const wchar_t *const tests[][2] = {
-        {L".ext", L"\\.ext"},
-        {L"{word}", L"\\{word\\}"},
-        {L"hola-mundo", L"hola\\-mundo"},
-        {L"$17.42 is your total?", L"\\$17\\.42 is your total\\?"},
-        {L"not really escaped\\?", L"not really escaped\\\\\\?"},
-    };
-
-    for (const auto &test : tests) {
-        auto escaped = escape_string(test[0], 0, STRING_STYLE_REGEX);
-        if (escaped != test[1]) {
-            err(L"pcre2_escape error: pcre2_escape(%ls) -> %ls, expected %ls", test[0],
-                escaped.c_str(), test[1]);
-        }
-    }
 }
 
 maybe_t<int> builtin_string(parser_t &parser, io_streams_t &streams, const wchar_t **argv);
@@ -7091,7 +6914,6 @@ static const test_t s_tests[]{
     {TEST_GROUP("perf_convert_ascii"), perf_convert_ascii, true},
     {TEST_GROUP("convert_nulls"), test_convert_nulls},
     {TEST_GROUP("tokenizer"), test_tokenizer},
-    {TEST_GROUP("fd_monitor"), test_fd_monitor},
     {TEST_GROUP("iothread"), test_iothread},
     {TEST_GROUP("pthread"), test_pthread},
     {TEST_GROUP("debounce"), test_debounce},
@@ -7101,7 +6923,6 @@ static const test_t s_tests[]{
     {TEST_GROUP("indents"), test_indents},
     {TEST_GROUP("utf8"), test_utf8},
     {TEST_GROUP("escape_sequences"), test_escape_sequences},
-    {TEST_GROUP("pcre2_escape"), test_pcre2_escape},
     {TEST_GROUP("lru"), test_lru},
     {TEST_GROUP("expand"), test_expand},
     {TEST_GROUP("expand"), test_expand_overflow},

@@ -1,6 +1,6 @@
 use crate::ffi;
-use crate::wchar::{wchar_t, wstr};
-use crate::wchar_ffi::wcslen;
+use crate::wchar::wstr;
+use crate::wchar_ffi::{wchar_t, wcslen};
 
 /// Support for wgettext.
 
@@ -27,8 +27,8 @@ pub(crate) use wgettext;
 /// The result is a WString.
 macro_rules! wgettext_fmt {
     (
-    $string:expr, // format string
-    $($args:expr),* // list of expressions
+    $string:expr // format string
+    $(, $args:expr)* // list of expressions
     $(,)?   // optional trailing comma
     ) => {
         crate::wutil::sprintf!(&crate::wutil::wgettext!($string), $($args),*)

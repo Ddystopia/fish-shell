@@ -25,7 +25,7 @@
 #include "fds.h"
 #include "flog.h"
 #include "function.h"
-#include "job_group.h"
+#include "job_group.rs.h"
 #include "parse_constants.h"
 #include "parse_execution.h"
 #include "proc.h"
@@ -458,7 +458,12 @@ void parser_t::job_add(shared_ptr<job_t> job) {
     job_list.insert(job_list.begin(), std::move(job));
 }
 
-void parser_t::job_promote(job_t *job) {
+void parser_t::job_promote(job_list_t::iterator job_it) {
+    // Move the job to the beginning.
+    std::rotate(job_list.begin(), job_it, std::next(job_it));
+}
+
+void parser_t::job_promote(const job_t *job) {
     job_list_t::iterator loc;
     for (loc = job_list.begin(); loc != job_list.end(); ++loc) {
         if (loc->get() == job) {
@@ -466,9 +471,12 @@ void parser_t::job_promote(job_t *job) {
         }
     }
     assert(loc != job_list.end());
+    job_promote(loc);
+}
 
-    // Move the job to the beginning.
-    std::rotate(job_list.begin(), loc, std::next(loc));
+void parser_t::job_promote_at(size_t job_pos) {
+    assert(job_pos < job_list.size());
+    job_promote(job_list.begin() + job_pos);
 }
 
 const job_t *parser_t::job_with_id(job_id_t id) const {
@@ -479,10 +487,16 @@ const job_t *parser_t::job_with_id(job_id_t id) const {
 }
 
 job_t *parser_t::job_get_from_pid(pid_t pid) const {
-    for (const auto &job : jobs()) {
-        for (const process_ptr_t &p : job->processes) {
+    size_t job_pos{};
+    return job_get_from_pid(pid, job_pos);
+}
+
+job_t *parser_t::job_get_from_pid(int64_t pid, size_t &job_pos) const {
+    for (auto it = job_list.begin(); it != job_list.end(); ++it) {
+        for (const process_ptr_t &p : (*it)->processes) {
             if (p->pid == pid) {
-                return job.get();
+                job_pos = it - job_list.begin();
+                return (*it).get();
             }
         }
     }
@@ -680,6 +694,12 @@ bool parser_t::ffi_has_funtion_block() const {
     return false;
 }
 
+uint64_t parser_t::ffi_global_event_blocks() const { return global_event_blocks; }
+void parser_t::ffi_incr_global_event_blocks() { ++global_event_blocks; }
+void parser_t::ffi_decr_global_event_blocks() { --global_event_blocks; }
+
+size_t parser_t::ffi_blocks_size() const { return block_list.size(); }
+
 block_t::block_t(block_type_t t) : block_type(t) {}
 
 wcstring block_t::description() const {
@@ -748,6 +768,10 @@ wcstring block_t::description() const {
     return result;
 }
 
+bool block_t::is_function_call() const {
+    return type() == block_type_t::function_call || type() == block_type_t::function_call_no_shadow;
+}
+
 // Various block constructors.
 
 block_t block_t::if_block() { return block_t(block_type_t::if_block); }
@@ -782,3 +806,5 @@ block_t block_t::scope_block(block_type_t type) {
 }
 block_t block_t::breakpoint_block() { return block_t(block_type_t::breakpoint); }
 block_t block_t::variable_assignment_block() { return block_t(block_type_t::variable_assignment); }
+
+void block_t::ffi_incr_event_blocks() { ++event_blocks; }

@@ -3,8 +3,13 @@
 #![allow(non_upper_case_globals)]
 #![allow(clippy::needless_return)]
 #![allow(clippy::manual_is_ascii_check)]
+#![allow(clippy::bool_assert_comparison)]
+#![allow(clippy::uninlined_format_args)]
+#![allow(clippy::derivable_impls)]
 
+#[macro_use]
 mod common;
+mod color;
 mod fd_monitor;
 mod fd_readable_set;
 mod fds;
@@ -18,6 +23,7 @@ mod ffi_init;
 mod ffi_tests;
 mod flog;
 mod future_feature_flags;
+mod job_group;
 mod nix;
 mod parse_constants;
 mod redirection;
@@ -38,3 +44,6 @@ mod abbrs;
 mod builtins;
 mod env;
 mod re;
+
+// Don't use `#[cfg(test)]` here to make sure ffi tests are built and tested
+mod tests;

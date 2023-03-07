@@ -16,7 +16,6 @@
 #include "cxx.h"
 #include "env.h"
 #include "expand.h"
-#include "job_group.h"
 #include "maybe.h"
 #include "operation_context.h"
 #include "parse_constants.h"
@@ -25,18 +24,10 @@
 #include "util.h"
 #include "wait_handle.h"
 
-struct event_t;
-class io_chain_t;
 class autoclose_fd_t;
-
-/// event_blockage_t represents a block on events.
-struct event_blockage_t {};
-
-typedef std::list<event_blockage_t> event_blockage_list_t;
-
-inline bool event_block_list_blocks_type(const event_blockage_list_t &ebls) {
-    return !ebls.empty();
-}
+class io_chain_t;
+struct event_t;
+struct job_group_t;
 
 /// Types of blocks.
 enum class block_type_t : uint8_t {
@@ -73,7 +64,7 @@ class block_t {
     wcstring function_name{};
 
     /// List of event blocks.
-    event_blockage_list_t event_blocks{};
+    uint64_t event_blocks{};
 
     // If this is a function block, the function args. Otherwise empty.
     wcstring_list_t function_args{};
@@ -106,10 +97,7 @@ class block_t {
     block_type_t type() const { return this->block_type; }
 
     /// \return if we are a function call (with or without shadowing).
-    bool is_function_call() const {
-        return type() == block_type_t::function_call ||
-               type() == block_type_t::function_call_no_shadow;
-    }
+    bool is_function_call() const;
 
     /// Entry points for creating blocks.
     static block_t if_block();
@@ -122,6 +110,9 @@ class block_t {
     static block_t scope_block(block_type_t type);
     static block_t breakpoint_block();
     static block_t variable_assignment_block();
+
+    /// autocxx junk.
+    void ffi_incr_event_blocks();
 };
 
 struct profile_item_t {
@@ -329,7 +320,7 @@ class parser_t : public std::enable_shared_from_this<parser_t> {
     void assert_can_execute() const;
 
     /// Global event blocks.
-    event_blockage_list_t global_event_blocks;
+    uint64_t global_event_blocks{};
 
     /// Evaluate the expressions contained in cmd.
     ///
@@ -431,13 +422,18 @@ class parser_t : public std::enable_shared_from_this<parser_t> {
     maybe_t<wcstring> get_function_name(int level = 1);
 
     /// Promotes a job to the front of the list.
-    void job_promote(job_t *job);
+    void job_promote(job_list_t::iterator job_it);
+    void job_promote(const job_t *job);
+    void job_promote_at(size_t job_pos);
 
     /// Return the job with the specified job id. If id is 0 or less, return the last job used.
     const job_t *job_with_id(job_id_t job_id) const;
 
     /// Returns the job with the given pid.
     job_t *job_get_from_pid(pid_t pid) const;
+
+    /// Returns the job and position with the given pid.
+    job_t *job_get_from_pid(int64_t pid, size_t &job_pos) const;
 
     /// Returns a new profile item if profiling is active. The caller should fill it in.
     /// The parser_t will deallocate it.
@@ -492,6 +488,14 @@ class parser_t : public std::enable_shared_from_this<parser_t> {
 
     /// autocxx junk.
     bool ffi_has_funtion_block() const;
+
+    /// autocxx junk.
+    uint64_t ffi_global_event_blocks() const;
+    void ffi_incr_global_event_blocks();
+    void ffi_decr_global_event_blocks();
+
+    /// autocxx junk.
+    size_t ffi_blocks_size() const;
 
     ~parser_t();
 };

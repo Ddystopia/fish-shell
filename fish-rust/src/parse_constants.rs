@@ -6,15 +6,16 @@ use crate::wchar::{wstr, WString, L};
 use crate::wchar_ffi::{wcharz, WCharFromFFI, WCharToFFI};
 use crate::wutil::{sprintf, wgettext_fmt};
 use cxx::{CxxWString, UniquePtr};
-use std::ops::{BitAnd, BitOrAssign};
+use std::ops::{BitAnd, BitOr, BitOrAssign};
 use widestring_suffix::widestrs;
 
-type SourceOffset = u32;
+pub type SourceOffset = u32;
 
 pub const SOURCE_OFFSET_INVALID: SourceOffset = SourceOffset::MAX;
 pub const SOURCE_LOCATION_UNKNOWN: usize = usize::MAX;
 
-pub struct ParseTreeFlags(u8);
+#[derive(Copy, Clone)]
+pub struct ParseTreeFlags(pub u8);
 
 pub const PARSE_FLAG_NONE: ParseTreeFlags = ParseTreeFlags(0);
 /// attempt to build a "parse tree" no matter what. this may result in a 'forest' of
@@ -38,13 +39,19 @@ impl BitAnd for ParseTreeFlags {
         (self.0 & rhs.0) != 0
     }
 }
+impl BitOr for ParseTreeFlags {
+    type Output = ParseTreeFlags;
+    fn bitor(self, rhs: Self) -> Self::Output {
+        Self(self.0 | rhs.0)
+    }
+}
 impl BitOrAssign for ParseTreeFlags {
     fn bitor_assign(&mut self, rhs: Self) {
         self.0 |= rhs.0
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Copy, Clone)]
 pub struct ParserTestErrorBits(u8);
 
 pub const PARSER_TEST_ERROR: ParserTestErrorBits = ParserTestErrorBits(1);
@@ -83,6 +90,7 @@ mod parse_constants_ffi {
 
     /// IMPORTANT: If the following enum table is modified you must also update token_type_description below.
     /// TODO above comment can be removed when we drop the FFI and get real enums.
+    #[derive(Clone, Copy)]
     enum ParseTokenType {
         invalid = 1,
 
@@ -103,6 +111,7 @@ mod parse_constants_ffi {
     }
 
     #[repr(u8)]
+    #[derive(Clone, Copy)]
     enum ParseKeyword {
         // 'none' is not a keyword, it is a sentinel indicating nothing.
         none,
@@ -134,7 +143,7 @@ mod parse_constants_ffi {
     }
 
     // Statement decorations like 'command' or 'exec'.
-    enum StatementDecoration {
+    pub enum StatementDecoration {
         none,
         command,
         builtin,
@@ -142,7 +151,7 @@ mod parse_constants_ffi {
     }
 
     // Parse error code list.
-    enum ParseErrorCode {
+    pub enum ParseErrorCode {
         none,
 
         // Matching values from enum parser_error.
@@ -231,17 +240,26 @@ mod parse_constants_ffi {
 }
 
 pub use parse_constants_ffi::{
-    parse_error_t, ParseErrorCode, ParseKeyword, ParseTokenType, SourceRange,
+    parse_error_t, ParseErrorCode, ParseKeyword, ParseTokenType, SourceRange, StatementDecoration,
 };
 
 impl SourceRange {
-    fn end(&self) -> SourceOffset {
+    pub fn new(start: SourceOffset, length: SourceOffset) -> Self {
+        SourceRange { start, length }
+    }
+    pub fn end(&self) -> SourceOffset {
         self.start.checked_add(self.length).expect("Overflow")
     }
 
     // \return true if a location is in this range, including one-past-the-end.
-    fn contains_inclusive(&self, loc: SourceOffset) -> bool {
+    pub fn contains_inclusive(&self, loc: SourceOffset) -> bool {
         self.start <= loc && loc - self.start <= self.length
+    }
+}
+
+impl Default for ParseTokenType {
+    fn default() -> Self {
+        ParseTokenType::invalid
     }
 }
 
@@ -269,6 +287,12 @@ impl From<ParseTokenType> for &'static wstr {
 fn token_type_description(token_type: ParseTokenType) -> wcharz_t {
     let s: &'static wstr = token_type.into();
     wcharz!(s)
+}
+
+impl Default for ParseKeyword {
+    fn default() -> Self {
+        ParseKeyword::none
+    }
 }
 
 impl From<ParseKeyword> for &'static wstr {
@@ -336,14 +360,14 @@ fn keyword_from_string<'a>(s: impl Into<&'a wstr>) -> ParseKeyword {
 }
 
 #[derive(Clone)]
-struct ParseError {
+pub struct ParseError {
     /// Text of the error.
-    text: WString,
+    pub text: WString,
     /// Code for the error.
-    code: ParseErrorCode,
+    pub code: ParseErrorCode,
     /// Offset and length of the token in the source code that triggered this error.
-    source_start: usize,
-    source_length: usize,
+    pub source_start: usize,
+    pub source_length: usize,
 }
 
 impl Default for ParseError {
@@ -374,18 +398,21 @@ impl ParseError {
         skip_caret: bool,
     ) -> WString {
         let mut result = prefix.to_owned();
-        let context = wstr::from_char_slice(
-            &src.as_char_slice()[self.source_start..self.source_start + self.source_length],
-        );
         // Some errors don't have their message passed in, so we construct them here.
         // This affects e.g. `eval "a=(foo)"`
         match self.code {
             ParseErrorCode::andor_in_pipeline => {
+                let context = wstr::from_char_slice(
+                    &src.as_char_slice()[self.source_start..self.source_start + self.source_length],
+                );
                 result += wstr::from_char_slice(
                     wgettext_fmt!(INVALID_PIPELINE_CMD_ERR_MSG, context).as_char_slice(),
                 );
             }
             ParseErrorCode::bare_variable_assignment => {
+                let context = wstr::from_char_slice(
+                    &src.as_char_slice()[self.source_start..self.source_start + self.source_length],
+                );
                 let assignment_src = context;
                 #[allow(clippy::explicit_auto_deref)]
                 let equals_pos = variable_assignment_equals_pos(assignment_src).unwrap();
@@ -588,7 +615,7 @@ fn token_type_user_presentable_description_ffi(
 }
 
 /// TODO This should be type alias once we drop the FFI.
-pub struct ParseErrorList(Vec<ParseError>);
+pub struct ParseErrorList(pub Vec<ParseError>);
 
 /// Helper function to offset error positions by the given amount. This is used when determining
 /// errors in a substring of a larger source buffer.

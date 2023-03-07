@@ -5,8 +5,8 @@ use crate::ffi::{valid_var_name_char, wcharz_t};
 use crate::future_feature_flags::{feature_test, FeatureFlag};
 use crate::parse_constants::SOURCE_OFFSET_INVALID;
 use crate::redirection::RedirectionMode;
-use crate::wchar::{WExt, L};
-use crate::wchar_ffi::{wchar_t, wstr, WCharFromFFI, WCharToFFI, WString};
+use crate::wchar::{wstr, WExt, WString, L};
+use crate::wchar_ffi::{wchar_t, WCharFromFFI, WCharToFFI};
 use crate::wutil::wgettext;
 use cxx::{CxxWString, SharedPtr, UniquePtr};
 use libc::{c_int, STDIN_FILENO, STDOUT_FILENO};
@@ -166,7 +166,7 @@ pub use tokenizer_ffi::{
 };
 
 #[derive(Clone, Copy)]
-pub struct TokFlags(u8);
+pub struct TokFlags(pub u8);
 
 impl BitAnd for TokFlags {
     type Output = bool;
@@ -178,6 +178,11 @@ impl BitOr for TokFlags {
     type Output = Self;
     fn bitor(self, rhs: Self) -> Self::Output {
         Self(self.0 | rhs.0)
+    }
+}
+impl BitOrAssign for TokFlags {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0
     }
 }
 
@@ -196,7 +201,7 @@ pub const TOK_SHOW_BLANK_LINES: TokFlags = TokFlags(4);
 pub const TOK_CONTINUE_AFTER_ERROR: TokFlags = TokFlags(8);
 
 /// Get the error message for an error \p err.
-fn tokenizer_get_error_message(err: TokenizerError) -> UniquePtr<CxxWString> {
+pub fn tokenizer_get_error_message(err: TokenizerError) -> UniquePtr<CxxWString> {
     let s: &'static wstr = err.into();
     s.to_ffi()
 }
@@ -303,7 +308,7 @@ impl Tokenizer {
     /// \param flags Flags to the tokenizer. Setting TOK_ACCEPT_UNFINISHED will cause the tokenizer
     /// to accept incomplete tokens, such as a subshell without a closing parenthesis, as a valid
     /// token. Setting TOK_SHOW_COMMENTS will return comments as tokens
-    fn new(start: &wstr, flags: TokFlags) -> Self {
+    pub fn new(start: &wstr, flags: TokFlags) -> Self {
         Tokenizer {
             token_cursor: 0,
             start: start.to_owned(),

@@ -99,8 +99,7 @@ endif()
 
 # List of sources for builtin functions.
 set(FISH_BUILTIN_SRCS
-    src/builtin.cpp src/builtins/argparse.cpp
-    src/builtins/bg.cpp src/builtins/bind.cpp src/builtins/block.cpp
+    src/builtin.cpp src/builtins/argparse.cpp src/builtins/bind.cpp
     src/builtins/builtin.cpp src/builtins/cd.cpp src/builtins/command.cpp
     src/builtins/commandline.cpp src/builtins/complete.cpp
     src/builtins/disown.cpp
@@ -120,7 +119,7 @@ set(FISH_SRCS
     src/exec.cpp src/expand.cpp src/fallback.cpp src/fish_version.cpp
     src/flog.cpp src/function.cpp src/highlight.cpp
     src/history.cpp src/history_file.cpp src/input.cpp src/input_common.cpp
-    src/io.cpp src/iothread.cpp src/job_group.cpp src/kill.cpp
+    src/io.cpp src/iothread.cpp src/kill.cpp
     src/null_terminated_array.cpp src/operation_context.cpp src/output.cpp
     src/pager.cpp src/parse_execution.cpp src/parse_tree.cpp src/parse_util.cpp
     src/parser.cpp src/parser_keywords.cpp src/path.cpp src/postfork.cpp
