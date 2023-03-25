@@ -4,11 +4,11 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.67"
 
-
 [dependencies]
 widestring-suffix = { path = "./widestring-suffix/" }
 
 autocxx = "0.23.1"
+bitflags = "1.3.2"
 cxx = "1.0"
 errno = "0.2.8"
 inventory = { version = "0.3.3", optional = true}
@@ -19,15 +19,16 @@ once_cell = "1.17.0"
 rand = { version = "0.8.5", features = ["small_rng"] }
 unixstring = "0.2.7"
 widestring = "1.0.2"
+lru = "0.10.0"
 
 [build-dependencies]
 autocxx-build = "0.23.1"
-cxx-build = { git = "https://github.com/ridiculousfish/cxx", branch = "fish" }
-cxx-gen = { git = "https://github.com/ridiculousfish/cxx", branch = "fish" }
+cxx-build = { git = "https://github.com/fish-shell/cxx", branch = "fish" }
+cxx-gen = { git = "https://github.com/fish-shell/cxx", branch = "fish" }
 miette = { version = "5", features = ["fancy"] }
 
 [lib]
-crate-type=["staticlib"]
+crate-type = ["staticlib"]
 
 [features]
 # The fish-ffi-tests feature causes tests to be built which need to use the FFI.
@@ -35,18 +36,21 @@ crate-type=["staticlib"]
 default = ["fish-ffi-tests"]
 fish-ffi-tests = ["inventory"]
 
+# The following features are auto-detected by the build-script and should not be enabled manually.
+bsd = []
+
 [patch.crates-io]
 cc = { git = "https://github.com/mqudsi/cc-rs", branch = "fish" }
-cxx = { git = "https://github.com/ridiculousfish/cxx", branch = "fish" }
-cxx-gen = { git = "https://github.com/ridiculousfish/cxx", branch = "fish" }
-autocxx = { git = "https://github.com/ridiculousfish/autocxx", branch = "fish" }
-autocxx-build = { git = "https://github.com/ridiculousfish/autocxx", branch = "fish" }
-autocxx-bindgen = { git = "https://github.com/ridiculousfish/autocxx-bindgen", branch = "fish" }
+cxx = { git = "https://github.com/fish-shell/cxx", branch = "fish" }
+cxx-gen = { git = "https://github.com/fish-shell/cxx", branch = "fish" }
+autocxx = { git = "https://github.com/fish-shell/autocxx", branch = "fish" }
+autocxx-build = { git = "https://github.com/fish-shell/autocxx", branch = "fish" }
+autocxx-bindgen = { git = "https://github.com/fish-shell/autocxx-bindgen", branch = "fish" }
 
-[patch.'https://github.com/ridiculousfish/cxx']
+[patch.'https://github.com/fish-shell/cxx']
 cc = { git = "https://github.com/mqudsi/cc-rs", branch = "fish" }
 
-[patch.'https://github.com/ridiculousfish/autocxx']
+[patch.'https://github.com/fish-shell/autocxx']
 cc = { git = "https://github.com/mqudsi/cc-rs", branch = "fish" }
 
 #cxx = { path = "../../cxx" }

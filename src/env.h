@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "common.h"
+#include "cxx.h"
 #include "maybe.h"
 
 class owning_null_terminated_array_t;
@@ -20,7 +21,7 @@ class owning_null_terminated_array_t;
 extern size_t read_byte_limit;
 extern bool curses_initialized;
 
-struct event_t;
+struct Event;
 
 // Flags that may be passed as the 'mode' in env_stack_t::set() / environment_t::get().
 enum : uint16_t {
@@ -193,6 +194,10 @@ class environment_t {
     virtual wcstring_list_t get_names(env_mode_flags_t flags) const = 0;
     virtual ~environment_t();
 
+    /// \return a environment variable as a unique pointer, or nullptr if none.
+    std::unique_ptr<env_var_t> get_or_null(const wcstring &key,
+                                           env_mode_flags_t mode = ENV_DEFAULT) const;
+
     /// Returns the PWD with a terminating slash.
     virtual wcstring get_pwd_slash() const;
 };
@@ -213,7 +218,7 @@ class env_stack_t final : public environment_t {
     friend class parser_t;
 
     /// The implementation. Do not access this directly.
-    const std::unique_ptr<env_stack_impl_t> impl_;
+    std::unique_ptr<env_stack_impl_t> impl_;
 
     /// All environment stacks are guarded by a global lock.
     acquired_lock<env_stack_impl_t> acquire_impl();
@@ -236,6 +241,10 @@ class env_stack_t final : public environment_t {
 
     /// Sets the variable with the specified name to the given values.
     int set(const wcstring &key, env_mode_flags_t mode, wcstring_list_t vals);
+
+    /// Sets the variable with the specified name to the given values.
+    /// The values should have type const wchar_t *const * (but autocxx doesn't support that).
+    int set_ffi(const wcstring &key, env_mode_flags_t mode, const void *vals, size_t count);
 
     /// Sets the variable with the specified name to a single value.
     int set_one(const wcstring &key, env_mode_flags_t mode, wcstring val);
@@ -283,11 +292,17 @@ class env_stack_t final : public environment_t {
     /// Slightly optimized implementation.
     wcstring get_pwd_slash() const override;
 
+    /// "Override" of get_or_null, as autocxx doesn't understand inheritance.
+    std::unique_ptr<env_var_t> get_or_null(const wcstring &key,
+                                           env_mode_flags_t mode = ENV_DEFAULT) const {
+        return environment_t::get_or_null(key, mode);
+    }
+
     /// Synchronizes universal variable changes.
     /// If \p always is set, perform synchronization even if there's no pending changes from this
     /// instance (that is, look for changes from other fish instances).
     /// \return a list of events for changed variables.
-    std::vector<event_t> universal_sync(bool always);
+    std::vector<rust::Box<Event>> universal_sync(bool always);
 
     // Compatibility hack; access the "environment stack" from back when there was just one.
     static const std::shared_ptr<env_stack_t> &principal_ref();

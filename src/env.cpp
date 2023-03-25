@@ -189,6 +189,15 @@ wcstring environment_t::get_pwd_slash() const {
     return pwd;
 }
 
+std::unique_ptr<env_var_t> environment_t::get_or_null(wcstring const &key,
+                                                      env_mode_flags_t mode) const {
+    auto variable = this->get(key, mode);
+    if (!variable.has_value()) {
+        return nullptr;
+    }
+    return make_unique<env_var_t>(variable.acquire());
+}
+
 null_environment_t::~null_environment_t() = default;
 maybe_t<env_var_t> null_environment_t::get(const wcstring &key, env_mode_flags_t mode) const {
     UNUSED(key);
@@ -408,7 +417,8 @@ void env_init(const struct config_paths_t *paths, bool do_uvars, bool default_pa
     }
 
     // Initialize termsize variables.
-    auto termsize = termsize_container_t::shared().initialize(vars);
+    environment_t &env_vars = vars;
+    auto termsize = termsize_initialize_ffi(reinterpret_cast<const unsigned char *>(&env_vars));
     if (vars.get(L"COLUMNS").missing_or_empty())
         vars.set_one(L"COLUMNS", ENV_GLOBAL, to_string(termsize.width));
     if (vars.get(L"LINES").missing_or_empty())
@@ -1315,7 +1325,7 @@ mod_result_t env_stack_impl_t::remove(const wcstring &key, int mode) {
     return result;
 }
 
-std::vector<event_t> env_stack_t::universal_sync(bool always) {
+std::vector<rust::Box<Event>> env_stack_t::universal_sync(bool always) {
     if (s_uvar_scope_is_global) return {};
     if (!always && !s_uvars_locally_modified) return {};
     s_uvars_locally_modified = false;
@@ -1326,11 +1336,11 @@ std::vector<event_t> env_stack_t::universal_sync(bool always) {
         universal_notifier_t::default_notifier().post_notification();
     }
     // React internally to changes to special variables like LANG, and populate on-variable events.
-    std::vector<event_t> result;
+    std::vector<rust::Box<Event>> result;
     for (const callback_data_t &cb : callbacks) {
         env_dispatch_var_change(cb.key, *this);
-        event_t evt =
-            cb.is_erase() ? event_t::variable_erase(cb.key) : event_t::variable_set(cb.key);
+        auto evt =
+            cb.is_erase() ? new_event_variable_erase(cb.key) : new_event_variable_set(cb.key);
         result.push_back(std::move(evt));
     }
     return result;
@@ -1403,6 +1413,12 @@ int env_stack_t::set(const wcstring &key, env_mode_flags_t mode, wcstring_list_t
         s_uvars_locally_modified = true;
     }
     return ret.status;
+}
+
+int env_stack_t::set_ffi(const wcstring &key, env_mode_flags_t mode, const void *vals,
+                         size_t count) {
+    const wchar_t *const *ptr = static_cast<const wchar_t *const *>(vals);
+    return this->set(key, mode, wcstring_list_t(ptr, ptr + count));
 }
 
 int env_stack_t::set_one(const wcstring &key, env_mode_flags_t mode, wcstring val) {
@@ -1478,6 +1494,8 @@ const std::shared_ptr<env_stack_t> &env_stack_t::principal_ref() {
 }
 
 env_stack_t::~env_stack_t() = default;
+
+env_stack_t::env_stack_t(env_stack_t &&) = default;
 
 #if defined(__APPLE__) || defined(__CYGWIN__)
 static int check_runtime_path(const char *path) {
