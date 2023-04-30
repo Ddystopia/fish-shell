@@ -37,6 +37,30 @@ struct wcharz_t {
     inline size_t length() const { return size(); }
 };
 
+// A helper type for passing vectors of strings back to Rust.
+// This hides the vector so that autocxx doesn't complain about templates.
+struct wcstring_list_ffi_t {
+    std::vector<wcstring> vals{};
+
+    wcstring_list_ffi_t() = default;
+    /* implicit */ wcstring_list_ffi_t(std::vector<wcstring> vals) : vals(std::move(vals)) {}
+
+    size_t size() const { return vals.size(); }
+    const wcstring &at(size_t idx) const { return vals.at(idx); }
+
+    /// Helper to construct one.
+    static std::unique_ptr<wcstring_list_ffi_t> create() {
+        return std::unique_ptr<wcstring_list_ffi_t>(new wcstring_list_ffi_t());
+    }
+
+    /// Append a string.
+    void push(wcstring s) { vals.push_back(std::move(s)); }
+
+    /// Helper functions used in tests only.
+    static wcstring_list_ffi_t get_test_data();
+    static void check_test_data(wcstring_list_ffi_t data);
+};
+
 class autoclose_fd_t;
 
 /// Wide character version of opendir(). Note that opendir() is guaranteed to set close-on-exec by
@@ -122,12 +146,6 @@ int fish_iswgraph(wint_t wc);
 int fish_wcswidth(const wchar_t *str);
 int fish_wcswidth(const wcstring &str);
 
-// returns an immortal locale_t corresponding to the C locale.
-locale_t fish_c_locale();
-
-void fish_invalidate_numeric_locale();
-locale_t fish_numeric_locale();
-
 int fish_wcstoi(const wchar_t *str, const wchar_t **endptr = nullptr, int base = 10);
 long fish_wcstol(const wchar_t *str, const wchar_t **endptr = nullptr, int base = 10);
 long long fish_wcstoll(const wchar_t *str, const wchar_t **endptr = nullptr, int base = 10);
@@ -136,7 +154,6 @@ unsigned long long fish_wcstoull(const wchar_t *str, const wchar_t **endptr = nu
 double fish_wcstod(const wchar_t *str, wchar_t **endptr, size_t len);
 double fish_wcstod(const wchar_t *str, wchar_t **endptr);
 double fish_wcstod(const wcstring &str, wchar_t **endptr);
-double fish_wcstod_underscores(const wchar_t *str, wchar_t **endptr);
 
 /// Class for representing a file's inode. We use this to detect and avoid symlink loops, among
 /// other things. While an inode / dev pair is sufficient to distinguish co-existing files, Linux

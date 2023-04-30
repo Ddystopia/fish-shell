@@ -3,15 +3,16 @@
 use crate::ffi::{fish_wcswidth, fish_wcwidth, wcharz_t};
 use crate::tokenizer::variable_assignment_equals_pos;
 use crate::wchar::{wstr, WString, L};
-use crate::wchar_ffi::{wcharz, WCharFromFFI, WCharToFFI};
+use crate::wchar_ffi::{wcharz, AsWstr, WCharFromFFI, WCharToFFI};
 use crate::wutil::{sprintf, wgettext_fmt};
+use cxx::{type_id, ExternType};
 use cxx::{CxxWString, UniquePtr};
 use std::ops::{BitAnd, BitOr, BitOrAssign};
 use widestring_suffix::widestrs;
 
 pub type SourceOffset = u32;
 
-pub const SOURCE_OFFSET_INVALID: SourceOffset = SourceOffset::MAX;
+pub const SOURCE_OFFSET_INVALID: usize = SourceOffset::MAX as _;
 pub const SOURCE_LOCATION_UNKNOWN: usize = usize::MAX;
 
 #[derive(Copy, Clone)]
@@ -51,7 +52,7 @@ impl BitOrAssign for ParseTreeFlags {
     }
 }
 
-#[derive(PartialEq, Eq, Copy, Clone)]
+#[derive(PartialEq, Eq, Copy, Clone, Default)]
 pub struct ParserTestErrorBits(u8);
 
 pub const PARSER_TEST_ERROR: ParserTestErrorBits = ParserTestErrorBits(1);
@@ -77,21 +78,23 @@ mod parse_constants_ffi {
     }
 
     /// A range of source code.
-    #[derive(PartialEq, Eq, Clone, Copy)]
-    struct SourceRange {
+    #[derive(PartialEq, Eq, Clone, Copy, Debug)]
+    pub struct SourceRange {
         start: u32,
         length: u32,
     }
 
     extern "Rust" {
-        fn end(self: &SourceRange) -> u32;
-        fn contains_inclusive(self: &SourceRange, loc: u32) -> bool;
+        #[cxx_name = "end"]
+        fn end_ffi(self: &SourceRange) -> u32;
+        #[cxx_name = "contains_inclusive"]
+        fn contains_inclusive_ffi(self: &SourceRange, loc: u32) -> bool;
     }
 
     /// IMPORTANT: If the following enum table is modified you must also update token_type_description below.
     /// TODO above comment can be removed when we drop the FFI and get real enums.
-    #[derive(Clone, Copy)]
-    enum ParseTokenType {
+    #[derive(Clone, Copy, Debug)]
+    pub enum ParseTokenType {
         invalid = 1,
 
         // Terminal types.
@@ -111,8 +114,8 @@ mod parse_constants_ffi {
     }
 
     #[repr(u8)]
-    #[derive(Clone, Copy)]
-    enum ParseKeyword {
+    #[derive(Clone, Copy, Debug)]
+    pub enum ParseKeyword {
         // 'none' is not a keyword, it is a sentinel indicating nothing.
         none,
 
@@ -210,17 +213,17 @@ mod parse_constants_ffi {
             skip_caret: bool,
         ) -> UniquePtr<CxxWString>;
 
-        type ParseErrorList;
-        fn new_parse_error_list() -> Box<ParseErrorList>;
+        type ParseErrorListFfi;
+        fn new_parse_error_list() -> Box<ParseErrorListFfi>;
         #[cxx_name = "offset_source_start"]
-        fn offset_source_start_ffi(self: &mut ParseErrorList, amt: usize);
-        fn size(self: &ParseErrorList) -> usize;
-        fn at(self: &ParseErrorList, offset: usize) -> *const ParseError;
-        fn empty(self: &ParseErrorList) -> bool;
-        fn push_back(self: &mut ParseErrorList, error: &parse_error_t);
-        fn append(self: &mut ParseErrorList, other: *mut ParseErrorList);
-        fn erase(self: &mut ParseErrorList, index: usize);
-        fn clear(self: &mut ParseErrorList);
+        fn offset_source_start_ffi(self: &mut ParseErrorListFfi, amt: usize);
+        fn size(self: &ParseErrorListFfi) -> usize;
+        fn at(self: &ParseErrorListFfi, offset: usize) -> *const ParseError;
+        fn empty(self: &ParseErrorListFfi) -> bool;
+        fn push_back(self: &mut ParseErrorListFfi, error: &parse_error_t);
+        fn append(self: &mut ParseErrorListFfi, other: *mut ParseErrorListFfi);
+        fn erase(self: &mut ParseErrorListFfi, index: usize);
+        fn clear(self: &mut ParseErrorListFfi);
     }
 
     extern "Rust" {
@@ -232,7 +235,7 @@ mod parse_constants_ffi {
     }
 
     // The location of a pipeline.
-    enum PipelinePosition {
+    pub enum PipelinePosition {
         none,       // not part of a pipeline
         first,      // first command in a pipeline
         subsequent, // second or further command in a pipeline
@@ -240,19 +243,39 @@ mod parse_constants_ffi {
 }
 
 pub use parse_constants_ffi::{
-    parse_error_t, ParseErrorCode, ParseKeyword, ParseTokenType, SourceRange, StatementDecoration,
+    parse_error_t, ParseErrorCode, ParseKeyword, ParseTokenType, PipelinePosition, SourceRange,
+    StatementDecoration,
 };
 
 impl SourceRange {
-    pub fn new(start: SourceOffset, length: SourceOffset) -> Self {
-        SourceRange { start, length }
+    pub fn new(start: usize, length: usize) -> Self {
+        SourceRange {
+            start: start.try_into().unwrap(),
+            length: length.try_into().unwrap(),
+        }
     }
-    pub fn end(&self) -> SourceOffset {
+    pub fn start(&self) -> usize {
+        self.start.try_into().unwrap()
+    }
+    pub fn length(&self) -> usize {
+        self.length.try_into().unwrap()
+    }
+    pub fn end(&self) -> usize {
+        self.start
+            .checked_add(self.length)
+            .expect("Overflow")
+            .try_into()
+            .unwrap()
+    }
+    fn end_ffi(&self) -> u32 {
         self.start.checked_add(self.length).expect("Overflow")
     }
 
     // \return true if a location is in this range, including one-past-the-end.
-    pub fn contains_inclusive(&self, loc: SourceOffset) -> bool {
+    pub fn contains_inclusive(&self, loc: usize) -> bool {
+        self.start() <= loc && loc - self.start() <= self.length()
+    }
+    fn contains_inclusive_ffi(&self, loc: u32) -> bool {
         self.start <= loc && loc - self.start <= self.length
     }
 }
@@ -322,33 +345,39 @@ impl From<ParseKeyword> for &'static wstr {
     }
 }
 
+impl printf_compat::args::ToArg<'static> for ParseKeyword {
+    fn to_arg(self) -> printf_compat::args::Arg<'static> {
+        printf_compat::args::Arg::Str(self.into())
+    }
+}
+
 fn keyword_description(keyword: ParseKeyword) -> wcharz_t {
     let s: &'static wstr = keyword.into();
     wcharz!(s)
 }
 
 impl From<&wstr> for ParseKeyword {
+    #[widestrs]
     fn from(s: &wstr) -> Self {
-        let s: Vec<u8> = s.encode_utf8().collect();
-        match unsafe { std::str::from_utf8_unchecked(&s) } {
-            "!" => ParseKeyword::kw_exclam,
-            "and" => ParseKeyword::kw_and,
-            "begin" => ParseKeyword::kw_begin,
-            "builtin" => ParseKeyword::kw_builtin,
-            "case" => ParseKeyword::kw_case,
-            "command" => ParseKeyword::kw_command,
-            "else" => ParseKeyword::kw_else,
-            "end" => ParseKeyword::kw_end,
-            "exec" => ParseKeyword::kw_exec,
-            "for" => ParseKeyword::kw_for,
-            "function" => ParseKeyword::kw_function,
-            "if" => ParseKeyword::kw_if,
-            "in" => ParseKeyword::kw_in,
-            "not" => ParseKeyword::kw_not,
-            "or" => ParseKeyword::kw_or,
-            "switch" => ParseKeyword::kw_switch,
-            "time" => ParseKeyword::kw_time,
-            "while" => ParseKeyword::kw_while,
+        match s {
+            _ if s == "!"L => ParseKeyword::kw_exclam,
+            _ if s == "and"L => ParseKeyword::kw_and,
+            _ if s == "begin"L => ParseKeyword::kw_begin,
+            _ if s == "builtin"L => ParseKeyword::kw_builtin,
+            _ if s == "case"L => ParseKeyword::kw_case,
+            _ if s == "command"L => ParseKeyword::kw_command,
+            _ if s == "else"L => ParseKeyword::kw_else,
+            _ if s == "end"L => ParseKeyword::kw_end,
+            _ if s == "exec"L => ParseKeyword::kw_exec,
+            _ if s == "for"L => ParseKeyword::kw_for,
+            _ if s == "function"L => ParseKeyword::kw_function,
+            _ if s == "if"L => ParseKeyword::kw_if,
+            _ if s == "in"L => ParseKeyword::kw_in,
+            _ if s == "not"L => ParseKeyword::kw_not,
+            _ if s == "or"L => ParseKeyword::kw_or,
+            _ if s == "switch"L => ParseKeyword::kw_switch,
+            _ if s == "time"L => ParseKeyword::kw_time,
+            _ if s == "while"L => ParseKeyword::kw_while,
             _ => ParseKeyword::none,
         }
     }
@@ -558,7 +587,7 @@ impl ParseError {
         src: &CxxWString,
         is_interactive: bool,
     ) -> UniquePtr<CxxWString> {
-        self.describe(&src.from_ffi(), is_interactive).to_ffi()
+        self.describe(src.as_wstr(), is_interactive).to_ffi()
     }
 
     fn describe_with_prefix_ffi(
@@ -568,13 +597,8 @@ impl ParseError {
         is_interactive: bool,
         skip_caret: bool,
     ) -> UniquePtr<CxxWString> {
-        self.describe_with_prefix(
-            &src.from_ffi(),
-            &prefix.from_ffi(),
-            is_interactive,
-            skip_caret,
-        )
-        .to_ffi()
+        self.describe_with_prefix(src.as_wstr(), prefix.as_wstr(), is_interactive, skip_caret)
+            .to_ffi()
     }
 }
 
@@ -609,14 +633,21 @@ fn token_type_user_presentable_description_ffi(
     token_type_user_presentable_description(type_, keyword).to_ffi()
 }
 
-/// TODO This should be type alias once we drop the FFI.
-pub struct ParseErrorList(pub Vec<ParseError>);
+pub type ParseErrorList = Vec<ParseError>;
+
+#[derive(Clone)]
+pub struct ParseErrorListFfi(pub ParseErrorList);
+
+unsafe impl ExternType for ParseErrorListFfi {
+    type Id = type_id!("ParseErrorListFfi");
+    type Kind = cxx::kind::Opaque;
+}
 
 /// Helper function to offset error positions by the given amount. This is used when determining
 /// errors in a substring of a larger source buffer.
 pub fn parse_error_offset_source_start(errors: &mut ParseErrorList, amt: usize) {
     if amt > 0 {
-        for ref mut error in errors.0.iter_mut() {
+        for ref mut error in errors.iter_mut() {
             // Preserve the special meaning of -1 as 'unknown'.
             if error.source_start != SOURCE_LOCATION_UNKNOWN {
                 error.source_start += amt;
@@ -625,13 +656,13 @@ pub fn parse_error_offset_source_start(errors: &mut ParseErrorList, amt: usize) 
     }
 }
 
-fn new_parse_error_list() -> Box<ParseErrorList> {
-    Box::new(ParseErrorList(Vec::new()))
+fn new_parse_error_list() -> Box<ParseErrorListFfi> {
+    Box::new(ParseErrorListFfi(Vec::new()))
 }
 
-impl ParseErrorList {
+impl ParseErrorListFfi {
     fn offset_source_start_ffi(&mut self, amt: usize) {
-        parse_error_offset_source_start(self, amt)
+        parse_error_offset_source_start(&mut self.0, amt)
     }
 
     fn size(&self) -> usize {
@@ -650,7 +681,7 @@ impl ParseErrorList {
         self.0.push(error.into())
     }
 
-    fn append(&mut self, other: *mut ParseErrorList) {
+    fn append(&mut self, other: *mut ParseErrorListFfi) {
         self.0.append(&mut (unsafe { &*other }.0.clone()));
     }
 

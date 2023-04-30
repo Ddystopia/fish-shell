@@ -7,6 +7,8 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+
+#include "trace.rs.h"
 #ifdef HAVE_SIGINFO_H
 #include <siginfo.h>
 #endif
@@ -33,6 +35,7 @@
 #include "exec.h"
 #include "fallback.h"  // IWYU pragma: keep
 #include "fds.h"
+#include "ffi.h"
 #include "flog.h"
 #include "function.h"
 #include "global_safety.h"
@@ -48,7 +51,7 @@
 #include "reader.h"
 #include "redirection.h"
 #include "timer.rs.h"
-#include "trace.h"
+#include "trace.rs.h"
 #include "wcstringutil.h"
 #include "wutil.h"  // IWYU pragma: keep
 
@@ -195,7 +198,7 @@ bool is_thompson_shell_script(const char *path) {
     // Construct envp.
     auto export_vars = vars.export_arr();
     const char **envp = export_vars->get();
-    std::string actual_cmd = wcs2string(p->actual_cmd);
+    std::string actual_cmd = wcs2zstring(p->actual_cmd);
 
     // Ensure the terminal modes are what they were before we changed them.
     restore_term_mode();
@@ -523,7 +526,7 @@ static launch_result_t exec_external_command(parser_t &parser, const std::shared
     const char *const *argv = argv_array.get();
     const char *const *envv = export_arr->get();
 
-    std::string actual_cmd_str = wcs2string(p->actual_cmd);
+    std::string actual_cmd_str = wcs2zstring(p->actual_cmd);
     const char *actual_cmd = actual_cmd_str.c_str();
     filename_ref_t file = parser.libdata().current_filename;
 
@@ -570,7 +573,7 @@ static launch_result_t exec_external_command(parser_t &parser, const std::shared
 
 // Given that we are about to execute a function, push a function block and set up the
 // variable environment.
-static block_t *function_prepare_environment(parser_t &parser, wcstring_list_t argv,
+static block_t *function_prepare_environment(parser_t &parser, std::vector<wcstring> argv,
                                              const function_properties_t &props) {
     // Extract the function name and remaining arguments.
     wcstring func_name;
@@ -631,11 +634,14 @@ static proc_performer_t get_performer_for_process(process_t *p, job_t *job,
     job_group_ref_t job_group = job->group;
 
     if (p->type == process_type_t::block_node) {
-        const parsed_source_ref_t &source = p->block_node_source;
+        const parsed_source_ref_t &source = *p->block_node_source;
         const ast::statement_t *node = p->internal_block_node;
-        assert(source && node && "Process is missing node info");
+        assert(source.has_value() && node && "Process is missing node info");
+        // The lambda will convert into a std::function which requires copyability. A Box can't
+        // be copied, so add another indirection.
+        auto source_box = std::make_shared<rust::Box<ParsedSourceRefFFI>>(source.clone());
         return [=](parser_t &parser) {
-            return parser.eval_node(source, *node, io_chain, job_group).status;
+            return parser.eval_node(**source_box, *node, io_chain, job_group).status;
         };
     } else {
         assert(p->type == process_type_t::function);
@@ -644,12 +650,12 @@ static proc_performer_t get_performer_for_process(process_t *p, job_t *job,
             FLOGF(error, _(L"Unknown function '%ls'"), p->argv0());
             return proc_performer_t{};
         }
-        const wcstring_list_t &argv = p->argv();
+        const std::vector<wcstring> &argv = p->argv();
         return [=](parser_t &parser) {
             // Pull out the job list from the function.
-            const ast::job_list_t &body = props->func_node->jobs;
+            const ast::job_list_t &body = props->func_node->jobs();
             const block_t *fb = function_prepare_environment(parser, argv, *props);
-            auto res = parser.eval_node(props->parsed_source, body, io_chain, job_group);
+            auto res = parser.eval_node(*props->parsed_source, body, io_chain, job_group);
             function_restore_environment(parser, fb);
 
             // If the function did not execute anything, treat it as success.
@@ -728,7 +734,7 @@ static proc_performer_t get_performer_for_builtin(
     // Pull out some fields which we want to copy. We don't want to store the process or job in the
     // returned closure.
     job_group_ref_t job_group = job->group;
-    const wcstring_list_t &argv = p->argv();
+    const std::vector<wcstring> &argv = p->argv();
 
     // Be careful to not capture p or j by value, as the intent is that this may be run on another
     // thread.
@@ -827,9 +833,7 @@ static launch_result_t exec_process_in_job(parser_t &parser, process_t *p,
 
     // Maybe trace this process.
     // TODO: 'and' and 'or' will not show.
-    if (trace_enabled(parser)) {
-        trace_argv(parser, nullptr, p->argv());
-    }
+    trace_if_enabled(parser, L"", p->argv());
 
     // The IO chain for this process.
     io_chain_t process_net_io_chain = block_io;
@@ -1136,7 +1140,7 @@ bool exec_job(parser_t &parser, const shared_ptr<job_t> &j, const io_chain_t &bl
 }
 
 /// Populate \p lst with the output of \p buffer, perhaps splitting lines according to \p split.
-static void populate_subshell_output(wcstring_list_t *lst, const separated_buffer_t &buffer,
+static void populate_subshell_output(std::vector<wcstring> *lst, const separated_buffer_t &buffer,
                                      bool split) {
     // Walk over all the elements.
     for (const auto &elem : buffer.elements()) {
@@ -1185,7 +1189,7 @@ static void populate_subshell_output(wcstring_list_t *lst, const separated_buffe
 /// sense that subshells used during string expansion should halt that expansion. \return the value
 /// of $status.
 static int exec_subshell_internal(const wcstring &cmd, parser_t &parser,
-                                  const job_group_ref_t &job_group, wcstring_list_t *lst,
+                                  const job_group_ref_t &job_group, std::vector<wcstring> *lst,
                                   bool *break_expand, bool apply_exit_status, bool is_subcmd) {
     parser.assert_can_execute();
     auto &ld = parser.libdata();
@@ -1200,7 +1204,7 @@ static int exec_subshell_internal(const wcstring &cmd, parser_t &parser,
         }
     });
 
-    const bool split_output = !parser.vars().get(L"IFS").missing_or_empty();
+    const bool split_output = parser.vars().get_unless_empty(L"IFS").has_value();
 
     // IO buffer creation may fail (e.g. if we have too many open files to make a pipe), so this may
     // be null.
@@ -1209,7 +1213,8 @@ static int exec_subshell_internal(const wcstring &cmd, parser_t &parser,
         *break_expand = true;
         return STATUS_CMD_ERROR;
     }
-    eval_res_t eval_res = parser.eval(cmd, io_chain_t{bufferfill}, job_group, block_type_t::subst);
+    eval_res_t eval_res =
+        parser.eval_with(cmd, io_chain_t{bufferfill}, job_group, block_type_t::subst);
     separated_buffer_t buffer = io_bufferfill_t::finish(std::move(bufferfill));
     if (buffer.discarded()) {
         *break_expand = true;
@@ -1229,7 +1234,7 @@ static int exec_subshell_internal(const wcstring &cmd, parser_t &parser,
 }
 
 int exec_subshell_for_expand(const wcstring &cmd, parser_t &parser,
-                             const job_group_ref_t &job_group, wcstring_list_t &outputs) {
+                             const job_group_ref_t &job_group, std::vector<wcstring> &outputs) {
     parser.assert_can_execute();
     bool break_expand = false;
     int ret = exec_subshell_internal(cmd, parser, job_group, &outputs, &break_expand, true, true);
@@ -1243,7 +1248,7 @@ int exec_subshell(const wcstring &cmd, parser_t &parser, bool apply_exit_status)
                                   false);
 }
 
-int exec_subshell(const wcstring &cmd, parser_t &parser, wcstring_list_t &outputs,
+int exec_subshell(const wcstring &cmd, parser_t &parser, std::vector<wcstring> &outputs,
                   bool apply_exit_status) {
     bool break_expand = false;
     return exec_subshell_internal(cmd, parser, nullptr, &outputs, &break_expand, apply_exit_status,

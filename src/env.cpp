@@ -35,6 +35,7 @@
 #include "proc.h"
 #include "reader.h"
 #include "termsize.h"
+#include "threads.rs.h"
 #include "wcstringutil.h"
 #include "wutil.h"  // IWYU pragma: keep
 
@@ -150,7 +151,7 @@ static export_generation_t next_export_generation() {
     return ++*val;
 }
 
-const wcstring_list_t &env_var_t::as_list() const { return *vals_; }
+const std::vector<wcstring> &env_var_t::as_list() const { return *vals_; }
 
 wchar_t env_var_t::get_delimiter() const {
     return is_pathvar() ? PATH_ARRAY_SEP : NONPATH_ARRAY_SEP;
@@ -159,7 +160,7 @@ wchar_t env_var_t::get_delimiter() const {
 /// Return a string representation of the var.
 wcstring env_var_t::as_string() const { return join_strings(*vals_, get_delimiter()); }
 
-void env_var_t::to_list(wcstring_list_t &out) const { out = *vals_; }
+void env_var_t::to_list(std::vector<wcstring> &out) const { out = *vals_; }
 
 env_var_t::env_var_flags_t env_var_t::flags_for(const wchar_t *name) {
     env_var_flags_t result = 0;
@@ -168,8 +169,8 @@ env_var_t::env_var_flags_t env_var_t::flags_for(const wchar_t *name) {
 }
 
 /// \return a singleton empty list, to avoid unnecessary allocations in env_var_t.
-std::shared_ptr<const wcstring_list_t> env_var_t::empty_list() {
-    static const auto s_empty_result = std::make_shared<const wcstring_list_t>();
+std::shared_ptr<const std::vector<wcstring>> env_var_t::empty_list() {
+    static const auto s_empty_result = std::make_shared<const std::vector<wcstring>>();
     return s_empty_result;
 }
 
@@ -178,15 +179,25 @@ environment_t::~environment_t() = default;
 wcstring environment_t::get_pwd_slash() const {
     // Return "/" if PWD is missing.
     // See https://github.com/fish-shell/fish-shell/issues/5080
-    auto pwd_var = get(L"PWD");
+    auto pwd_var = get_unless_empty(L"PWD");
     wcstring pwd;
-    if (!pwd_var.missing_or_empty()) {
+    if (pwd_var) {
         pwd = pwd_var->as_string();
     }
     if (!string_suffixes_string(L"/", pwd)) {
         pwd.push_back(L'/');
     }
     return pwd;
+}
+
+maybe_t<env_var_t> environment_t::get_unless_empty(const wcstring &key,
+                                                   env_mode_flags_t mode) const {
+    if (auto variable = this->get(key, mode)) {
+        if (!variable->empty()) {
+            return variable;
+        }
+    }
+    return none();
 }
 
 std::unique_ptr<env_var_t> environment_t::get_or_null(wcstring const &key,
@@ -204,7 +215,7 @@ maybe_t<env_var_t> null_environment_t::get(const wcstring &key, env_mode_flags_t
     UNUSED(mode);
     return none();
 }
-wcstring_list_t null_environment_t::get_names(env_mode_flags_t flags) const {
+std::vector<wcstring> null_environment_t::get_names(env_mode_flags_t flags) const {
     UNUSED(flags);
     return {};
 }
@@ -212,20 +223,20 @@ wcstring_list_t null_environment_t::get_names(env_mode_flags_t flags) const {
 /// Set up the USER and HOME variable.
 static void setup_user(env_stack_t &vars) {
     auto uid = geteuid();
-    auto user_var = vars.get(L"USER");
+    auto user_var = vars.get_unless_empty(L"USER");
     struct passwd userinfo;
     struct passwd *result;
     char buf[8192];
 
     // If we have a $USER, we try to get the passwd entry for the name.
     // If that has the same UID that we use, we assume the data is correct.
-    if (!user_var.missing_or_empty()) {
-        std::string unam_narrow = wcs2string(user_var->as_string());
+    if (user_var) {
+        std::string unam_narrow = wcs2zstring(user_var->as_string());
         int retval = getpwnam_r(unam_narrow.c_str(), &userinfo, buf, sizeof(buf), &result);
         if (!retval && result) {
             if (result->pw_uid == uid) {
                 // The uid matches but we still might need to set $HOME.
-                if (vars.get(L"HOME").missing_or_empty()) {
+                if (!vars.get_unless_empty(L"HOME")) {
                     if (userinfo.pw_dir) {
                         vars.set_one(L"HOME", ENV_GLOBAL | ENV_EXPORT,
                                      str2wcstring(userinfo.pw_dir));
@@ -246,7 +257,7 @@ static void setup_user(env_stack_t &vars) {
         vars.set_one(L"USER", ENV_GLOBAL | ENV_EXPORT, uname);
         // Only change $HOME if it's empty, so we allow e.g. `HOME=(mktemp -d)`.
         // This is okay with common `su` and `sudo` because they set $HOME.
-        if (vars.get(L"HOME").missing_or_empty()) {
+        if (!vars.get_unless_empty(L"HOME")) {
             if (userinfo.pw_dir) {
                 vars.set_one(L"HOME", ENV_GLOBAL | ENV_EXPORT, str2wcstring(userinfo.pw_dir));
             } else {
@@ -255,7 +266,7 @@ static void setup_user(env_stack_t &vars) {
                 vars.set_empty(L"HOME", ENV_GLOBAL | ENV_EXPORT);
             }
         }
-    } else if (vars.get(L"HOME").missing_or_empty()) {
+    } else if (!vars.get_unless_empty(L"HOME")) {
         // If $USER is empty as well (which we tried to set above), we can't get $HOME.
         vars.set_empty(L"HOME", ENV_GLOBAL | ENV_EXPORT);
     }
@@ -276,8 +287,8 @@ void misc_init() {
 /// Make sure the PATH variable contains something.
 static void setup_path() {
     auto &vars = env_stack_t::globals();
-    const auto path = vars.get(L"PATH");
-    if (path.missing_or_empty()) {
+    const auto path = vars.get_unless_empty(L"PATH");
+    if (!path) {
 #if defined(_CS_PATH)
         // _CS_PATH: colon-separated paths to find POSIX utilities
         std::string cspath;
@@ -419,9 +430,9 @@ void env_init(const struct config_paths_t *paths, bool do_uvars, bool default_pa
     // Initialize termsize variables.
     environment_t &env_vars = vars;
     auto termsize = termsize_initialize_ffi(reinterpret_cast<const unsigned char *>(&env_vars));
-    if (vars.get(L"COLUMNS").missing_or_empty())
+    if (!vars.get_unless_empty(L"COLUMNS"))
         vars.set_one(L"COLUMNS", ENV_GLOBAL, to_string(termsize.width));
-    if (vars.get(L"LINES").missing_or_empty())
+    if (!vars.get_unless_empty(L"LINES"))
         vars.set_one(L"LINES", ENV_GLOBAL, to_string(termsize.height));
 
     // Set fish_bind_mode to "default".
@@ -472,11 +483,11 @@ void env_init(const struct config_paths_t *paths, bool do_uvars, bool default_pa
         for (const auto &kv : table) {
             if (string_prefixes_string(prefix, kv.first)) {
                 wcstring escaped_name = kv.first.substr(prefix_len);
-                wcstring name;
-                if (unescape_string(escaped_name, &name, unescape_flags_t{}, STRING_STYLE_VAR)) {
-                    wcstring key = name;
+                if (auto name =
+                        unescape_string(escaped_name, unescape_flags_t{}, STRING_STYLE_VAR)) {
+                    wcstring key = *name;
                     wcstring replacement = join_strings(kv.second.as_list(), L' ');
-                    abbrs->add(std::move(name), std::move(key), std::move(replacement),
+                    abbrs->add(std::move(*name), std::move(key), std::move(replacement),
                                abbrs_position_t::command, from_universal);
                 }
             }
@@ -484,7 +495,7 @@ void env_init(const struct config_paths_t *paths, bool do_uvars, bool default_pa
     }
 }
 
-static int set_umask(const wcstring_list_t &list_val) {
+static int set_umask(const std::vector<wcstring> &list_val) {
     long mask = -1;
     if (list_val.size() == 1 && !list_val.front().empty()) {
         mask = fish_wcstol(list_val.front().c_str(), nullptr, 8);
@@ -604,7 +615,7 @@ class env_scoped_impl_t : public environment_t, noncopyable_t {
     }
 
     maybe_t<env_var_t> get(const wcstring &key, env_mode_flags_t mode = ENV_DEFAULT) const override;
-    wcstring_list_t get_names(env_mode_flags_t flags) const override;
+    std::vector<wcstring> get_names(env_mode_flags_t flags) const override;
 
     perproc_data_t &perproc_data() { return perproc_data_; }
     const perproc_data_t &perproc_data() const { return perproc_data_; }
@@ -712,7 +723,7 @@ std::shared_ptr<owning_null_terminated_array_t> env_scoped_impl_t::create_export
     get_exported(this->globals_, vals);
     get_exported(this->locals_, vals);
 
-    const wcstring_list_t uni = uvars()->get_names(true, false);
+    const std::vector<wcstring> uni = uvars()->get_names(true, false);
     for (const wcstring &key : uni) {
         auto var = uvars()->get(key);
         assert(var && "Variable should be present in uvars");
@@ -730,9 +741,9 @@ std::shared_ptr<owning_null_terminated_array_t> env_scoped_impl_t::create_export
     std::vector<std::string> export_list;
     export_list.reserve(vals.size());
     for (const auto &kv : vals) {
-        std::string str = wcs2string(kv.first);
+        std::string str = wcs2zstring(kv.first);
         str.push_back('=');
-        str.append(wcs2string(kv.second.as_string()));
+        str.append(wcs2zstring(kv.second.as_string()));
         export_list.push_back(std::move(str));
     }
     return std::make_shared<owning_null_terminated_array_t>(std::move(export_list));
@@ -769,14 +780,14 @@ maybe_t<env_var_t> env_scoped_impl_t::try_get_computed(const wcstring &key) cons
         if (!history) {
             history = history_t::with_name(history_session_id(*this));
         }
-        wcstring_list_t result;
+        std::vector<wcstring> result;
         if (history) history->get_history(result);
         return env_var_t(L"history", std::move(result));
     } else if (key == L"fish_killring") {
         return env_var_t(L"fish_killring", kill_entries());
     } else if (key == L"pipestatus") {
         const auto &js = perproc_data().statuses;
-        wcstring_list_t result;
+        std::vector<wcstring> result;
         result.reserve(js.pipestatus.size());
         for (int i : js.pipestatus) {
             result.push_back(to_string(i));
@@ -868,7 +879,7 @@ maybe_t<env_var_t> env_scoped_impl_t::get(const wcstring &key, env_mode_flags_t 
     return result;
 }
 
-wcstring_list_t env_scoped_impl_t::get_names(env_mode_flags_t flags) const {
+std::vector<wcstring> env_scoped_impl_t::get_names(env_mode_flags_t flags) const {
     const query_t query(flags);
     std::set<wcstring> names;
 
@@ -899,7 +910,7 @@ wcstring_list_t env_scoped_impl_t::get_names(env_mode_flags_t flags) const {
     }
 
     if (query.universal) {
-        const wcstring_list_t uni_list = uvars()->get_names(query.exports, query.unexports);
+        const std::vector<wcstring> uni_list = uvars()->get_names(query.exports, query.unexports);
         names.insert(uni_list.begin(), uni_list.end());
     }
 
@@ -949,7 +960,7 @@ class env_stack_impl_t final : public env_scoped_impl_t {
     using env_scoped_impl_t::env_scoped_impl_t;
 
     /// Set a variable under the name \p key, using the given \p mode, setting its value to \p val.
-    mod_result_t set(const wcstring &key, env_mode_flags_t mode, wcstring_list_t val);
+    mod_result_t set(const wcstring &key, env_mode_flags_t mode, std::vector<wcstring> val);
 
     /// Remove a variable under the name \p key.
     mod_result_t remove(const wcstring &key, int var_mode);
@@ -1018,13 +1029,14 @@ class env_stack_impl_t final : public env_scoped_impl_t {
     /// Try setting\p key as an electric or readonly variable.
     /// \return an error code, or none() if not an electric or readonly variable.
     /// \p val will not be modified upon a none() return.
-    maybe_t<int> try_set_electric(const wcstring &key, const query_t &query, wcstring_list_t &val);
+    maybe_t<int> try_set_electric(const wcstring &key, const query_t &query,
+                                  std::vector<wcstring> &val);
 
     /// Set a universal value.
-    void set_universal(const wcstring &key, wcstring_list_t val, const query_t &query);
+    void set_universal(const wcstring &key, std::vector<wcstring> val, const query_t &query);
 
     /// Set a variable in a given node \p node.
-    void set_in_node(const env_node_ref_t &node, const wcstring &key, wcstring_list_t &&val,
+    void set_in_node(const env_node_ref_t &node, const wcstring &key, std::vector<wcstring> &&val,
                      const var_flags_t &flags);
 
     // Implement the default behavior of 'set' by finding the node for an unspecified scope.
@@ -1084,8 +1096,8 @@ env_node_ref_t env_stack_impl_t::pop() {
 }
 
 /// Apply the pathvar behavior, splitting about colons.
-static wcstring_list_t colon_split(const wcstring_list_t &val) {
-    wcstring_list_t split_val;
+static std::vector<wcstring> colon_split(const std::vector<wcstring> &val) {
+    std::vector<wcstring> split_val;
     split_val.reserve(val.size());
     for (const wcstring &str : val) {
         vec_append(split_val, split_string(str, PATH_ARRAY_SEP));
@@ -1094,7 +1106,7 @@ static wcstring_list_t colon_split(const wcstring_list_t &val) {
 }
 
 void env_stack_impl_t::set_in_node(const env_node_ref_t &node, const wcstring &key,
-                                   wcstring_list_t &&val, const var_flags_t &flags) {
+                                   std::vector<wcstring> &&val, const var_flags_t &flags) {
     env_var_t &var = node->env[key];
 
     // Use an explicit exports, or inherit from the existing variable.
@@ -1118,7 +1130,7 @@ void env_stack_impl_t::set_in_node(const env_node_ref_t &node, const wcstring &k
 }
 
 maybe_t<int> env_stack_impl_t::try_set_electric(const wcstring &key, const query_t &query,
-                                                wcstring_list_t &val) {
+                                                std::vector<wcstring> &val) {
     const electric_var_t *ev = electric_var_t::for_name(key);
     if (!ev) {
         return none();
@@ -1164,7 +1176,7 @@ maybe_t<int> env_stack_impl_t::try_set_electric(const wcstring &key, const query
 }
 
 /// Set a universal variable, inheriting as applicable from the given old variable.
-void env_stack_impl_t::set_universal(const wcstring &key, wcstring_list_t val,
+void env_stack_impl_t::set_universal(const wcstring &key, std::vector<wcstring> val,
                                      const query_t &query) {
     auto oldvar = uvars()->get(key);
     // Resolve whether or not to export.
@@ -1188,7 +1200,7 @@ void env_stack_impl_t::set_universal(const wcstring &key, wcstring_list_t val,
 
     // Split about ':' if it's a path variable.
     if (pathvar) {
-        wcstring_list_t split_val;
+        std::vector<wcstring> split_val;
         for (const wcstring &str : val) {
             vec_append(split_val, split_string(str, PATH_ARRAY_SEP));
         }
@@ -1205,7 +1217,7 @@ void env_stack_impl_t::set_universal(const wcstring &key, wcstring_list_t val,
 }
 
 mod_result_t env_stack_impl_t::set(const wcstring &key, env_mode_flags_t mode,
-                                   wcstring_list_t val) {
+                                   std::vector<wcstring> val) {
     const query_t query(mode);
     // Handle electric and read-only variables.
     auto ret = try_set_electric(key, query, val);
@@ -1381,11 +1393,11 @@ maybe_t<env_var_t> env_stack_t::get(const wcstring &key, env_mode_flags_t mode) 
     return acquire_impl()->get(key, mode);
 }
 
-wcstring_list_t env_stack_t::get_names(env_mode_flags_t flags) const {
+std::vector<wcstring> env_stack_t::get_names(env_mode_flags_t flags) const {
     return acquire_impl()->get_names(flags);
 }
 
-int env_stack_t::set(const wcstring &key, env_mode_flags_t mode, wcstring_list_t vals) {
+int env_stack_t::set(const wcstring &key, env_mode_flags_t mode, std::vector<wcstring> vals) {
     // Historical behavior.
     if (vals.size() == 1 && (key == L"PWD" || key == L"HOME")) {
         path_make_canonical(vals.front());
@@ -1418,11 +1430,11 @@ int env_stack_t::set(const wcstring &key, env_mode_flags_t mode, wcstring_list_t
 int env_stack_t::set_ffi(const wcstring &key, env_mode_flags_t mode, const void *vals,
                          size_t count) {
     const wchar_t *const *ptr = static_cast<const wchar_t *const *>(vals);
-    return this->set(key, mode, wcstring_list_t(ptr, ptr + count));
+    return this->set(key, mode, std::vector<wcstring>(ptr, ptr + count));
 }
 
 int env_stack_t::set_one(const wcstring &key, env_mode_flags_t mode, wcstring val) {
-    wcstring_list_t vals;
+    std::vector<wcstring> vals;
     vals.push_back(std::move(val));
     return set(key, mode, std::move(vals));
 }
@@ -1451,7 +1463,7 @@ std::shared_ptr<owning_null_terminated_array_t> env_stack_t::export_arr() {
 
 std::shared_ptr<environment_t> env_stack_t::snapshot() const { return acquire_impl()->snapshot(); }
 
-void env_stack_t::set_argv(wcstring_list_t argv) { set(L"argv", ENV_LOCAL, std::move(argv)); }
+void env_stack_t::set_argv(std::vector<wcstring> argv) { set(L"argv", ENV_LOCAL, std::move(argv)); }
 
 wcstring env_stack_t::get_pwd_slash() const {
     wcstring pwd = acquire_impl()->perproc_data().pwd;

@@ -31,9 +31,7 @@
 
 #include "builtins/argparse.h"
 #include "builtins/bind.h"
-#include "builtins/builtin.h"
 #include "builtins/cd.h"
-#include "builtins/command.h"
 #include "builtins/commandline.h"
 #include "builtins/complete.h"
 #include "builtins/disown.h"
@@ -42,9 +40,7 @@
 #include "builtins/functions.h"
 #include "builtins/history.h"
 #include "builtins/jobs.h"
-#include "builtins/math.h"
 #include "builtins/path.h"
-#include "builtins/printf.h"
 #include "builtins/read.h"
 #include "builtins/set.h"
 #include "builtins/set_color.h"
@@ -53,12 +49,12 @@
 #include "builtins/status.h"
 #include "builtins/string.h"
 #include "builtins/test.h"
-#include "builtins/type.h"
 #include "builtins/ulimit.h"
 #include "complete.h"
 #include "cxx.h"
 #include "cxxgen.h"
 #include "fallback.h"  // IWYU pragma: keep
+#include "ffi.h"
 #include "flog.h"
 #include "io.h"
 #include "null_terminated_array.h"
@@ -72,7 +68,7 @@
 
 static maybe_t<RustBuiltin> try_get_rust_builtin(const wcstring &cmd);
 static maybe_t<int> builtin_run_rust(parser_t &parser, io_streams_t &streams,
-                                     const wcstring_list_t &argv, RustBuiltin builtin);
+                                     const std::vector<wcstring> &argv, RustBuiltin builtin);
 
 /// Counts the number of arguments in the specified null-terminated array
 int builtin_count_args(const wchar_t *const *argv) {
@@ -96,7 +92,7 @@ void builtin_wperror(const wchar_t *program_name, io_streams_t &streams) {
     if (err != nullptr) {
         const wcstring werr = str2wcstring(err);
         streams.err.append(werr);
-        streams.err.push_back(L'\n');
+        streams.err.push(L'\n');
     }
 }
 
@@ -363,10 +359,10 @@ static constexpr builtin_data_t builtin_datas[] = {
     {L"block", &implemented_in_rust, N_(L"Temporarily block delivery of events")},
     {L"break", &builtin_break_continue, N_(L"Stop the innermost loop")},
     {L"breakpoint", &builtin_breakpoint, N_(L"Halt execution and start debug prompt")},
-    {L"builtin", &builtin_builtin, N_(L"Run a builtin specifically")},
+    {L"builtin", &implemented_in_rust, N_(L"Run a builtin specifically")},
     {L"case", &builtin_generic, N_(L"Block of code to run conditionally")},
     {L"cd", &builtin_cd, N_(L"Change working directory")},
-    {L"command", &builtin_command, N_(L"Run a command specifically")},
+    {L"command", &implemented_in_rust, N_(L"Run a command specifically")},
     {L"commandline", &builtin_commandline, N_(L"Set or get the commandline")},
     {L"complete", &builtin_complete, N_(L"Edit command specific completions")},
     {L"contains", &implemented_in_rust, N_(L"Search for a specified string in a list")},
@@ -388,11 +384,11 @@ static constexpr builtin_data_t builtin_datas[] = {
     {L"history", &builtin_history, N_(L"History of commands executed by user")},
     {L"if", &builtin_generic, N_(L"Evaluate block if condition is true")},
     {L"jobs", &builtin_jobs, N_(L"Print currently running jobs")},
-    {L"math", &builtin_math, N_(L"Evaluate math expressions")},
+    {L"math", &implemented_in_rust, N_(L"Evaluate math expressions")},
     {L"not", &builtin_generic, N_(L"Negate exit status of job")},
     {L"or", &builtin_generic, N_(L"Execute command if previous command failed")},
     {L"path", &builtin_path, N_(L"Handle paths")},
-    {L"printf", &builtin_printf, N_(L"Prints formatted text")},
+    {L"printf", &implemented_in_rust, N_(L"Prints formatted text")},
     {L"pwd", &implemented_in_rust, N_(L"Print the working directory")},
     {L"random", &implemented_in_rust, N_(L"Generate random number")},
     {L"read", &builtin_read, N_(L"Read a line of input into variables")},
@@ -407,7 +403,7 @@ static constexpr builtin_data_t builtin_datas[] = {
     {L"test", &builtin_test, N_(L"Test a condition")},
     {L"time", &builtin_generic, N_(L"Measure how long a command or block takes")},
     {L"true", &builtin_true, N_(L"Return a successful result")},
-    {L"type", &builtin_type, N_(L"Check if a thing is a thing")},
+    {L"type", &implemented_in_rust, N_(L"Check if a thing is a thing")},
     {L"ulimit", &builtin_ulimit, N_(L"Get/set resource usage limits")},
     {L"wait", &implemented_in_rust, N_(L"Wait for background processes completed")},
     {L"while", &builtin_generic, N_(L"Perform a command multiple times")},
@@ -437,7 +433,8 @@ static const wchar_t *const help_builtins[] = {L"for", L"while",  L"function", L
 static bool cmd_needs_help(const wcstring &cmd) { return contains(help_builtins, cmd); }
 
 /// Execute a builtin command
-proc_status_t builtin_run(parser_t &parser, const wcstring_list_t &argv, io_streams_t &streams) {
+proc_status_t builtin_run(parser_t &parser, const std::vector<wcstring> &argv,
+                          io_streams_t &streams) {
     if (argv.empty()) return proc_status_t::from_exit_code(STATUS_INVALID_ARGS);
     const wcstring &cmdname = argv.front();
 
@@ -495,14 +492,16 @@ proc_status_t builtin_run(parser_t &parser, const wcstring_list_t &argv, io_stre
 }
 
 /// Returns a list of all builtin names.
-wcstring_list_t builtin_get_names() {
-    wcstring_list_t result;
+std::vector<wcstring> builtin_get_names() {
+    std::vector<wcstring> result;
     result.reserve(BUILTIN_COUNT);
     for (const auto &builtin_data : builtin_datas) {
         result.push_back(builtin_data.name);
     }
     return result;
 }
+
+wcstring_list_ffi_t builtin_get_names_ffi() { return builtin_get_names(); }
 
 /// Insert all builtin names into list.
 void builtin_get_names(completion_list_t *list) {
@@ -533,8 +532,14 @@ static maybe_t<RustBuiltin> try_get_rust_builtin(const wcstring &cmd) {
     if (cmd == L"block") {
         return RustBuiltin::Block;
     }
+    if (cmd == L"builtin") {
+        return RustBuiltin::Builtin;
+    }
     if (cmd == L"contains") {
         return RustBuiltin::Contains;
+    }
+    if (cmd == L"command") {
+        return RustBuiltin::Command;
     }
     if (cmd == L"echo") {
         return RustBuiltin::Echo;
@@ -545,6 +550,9 @@ static maybe_t<RustBuiltin> try_get_rust_builtin(const wcstring &cmd) {
     if (cmd == L"exit") {
         return RustBuiltin::Exit;
     }
+    if (cmd == L"math") {
+        return RustBuiltin::Math;
+    }
     if (cmd == L"pwd") {
         return RustBuiltin::Pwd;
     }
@@ -554,8 +562,14 @@ static maybe_t<RustBuiltin> try_get_rust_builtin(const wcstring &cmd) {
     if (cmd == L"realpath") {
         return RustBuiltin::Realpath;
     }
+    if (cmd == L"type") {
+        return RustBuiltin::Type;
+    }
     if (cmd == L"wait") {
         return RustBuiltin::Wait;
+    }
+    if (cmd == L"printf") {
+        return RustBuiltin::Printf;
     }
     if (cmd == L"return") {
         return RustBuiltin::Return;
@@ -564,14 +578,9 @@ static maybe_t<RustBuiltin> try_get_rust_builtin(const wcstring &cmd) {
 }
 
 static maybe_t<int> builtin_run_rust(parser_t &parser, io_streams_t &streams,
-                                     const wcstring_list_t &argv, RustBuiltin builtin) {
-    ::rust::Vec<wcharz_t> rust_argv;
-    for (const wcstring &arg : argv) {
-        rust_argv.emplace_back(arg.c_str());
-    }
-
+                                     const std::vector<wcstring> &argv, RustBuiltin builtin) {
     int status_code;
-    bool update_status = rust_run_builtin(parser, streams, rust_argv, builtin, status_code);
+    bool update_status = rust_run_builtin(parser, streams, argv, builtin, status_code);
     if (update_status) {
         return status_code;
     } else {

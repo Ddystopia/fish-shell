@@ -1,6 +1,8 @@
 use miette::miette;
 
 fn main() -> miette::Result<()> {
+    cc::Build::new().file("src/compat.c").compile("libcompat.a");
+
     let rust_dir = std::env::var("CARGO_MANIFEST_DIR").expect("Env var CARGO_MANIFEST_DIR missing");
     let target_dir =
         std::env::var("FISH_RUST_TARGET_DIR").unwrap_or(format!("{}/{}", rust_dir, "target/"));
@@ -24,21 +26,29 @@ fn main() -> miette::Result<()> {
     // This must come before autocxx so that cxx can emit its cxx.h header.
     let source_files = vec![
         "src/abbrs.rs",
+        "src/ast.rs",
         "src/event.rs",
+        "src/common.rs",
         "src/fd_monitor.rs",
         "src/fd_readable_set.rs",
         "src/fds.rs",
         "src/ffi_init.rs",
         "src/ffi_tests.rs",
+        "src/fish_indent.rs",
         "src/future_feature_flags.rs",
+        "src/highlight.rs",
         "src/job_group.rs",
         "src/parse_constants.rs",
+        "src/parse_tree.rs",
+        "src/parse_util.rs",
         "src/redirection.rs",
         "src/smoke.rs",
         "src/termsize.rs",
         "src/timer.rs",
         "src/tokenizer.rs",
         "src/topic_monitor.rs",
+        "src/threads.rs",
+        "src/trace.rs",
         "src/util.rs",
         "src/wait_handle.rs",
         "src/builtins/shared.rs",

@@ -1,12 +1,10 @@
 use crate::wchar;
 use crate::wchar_ffi::WCharToFFI;
 #[rustfmt::skip]
-use ::std::fmt::{self, Debug, Formatter};
-#[rustfmt::skip]
 use ::std::pin::Pin;
 #[rustfmt::skip]
 use ::std::slice;
-use crate::env::flags::EnvMode;
+use crate::env::EnvMode;
 pub use crate::wait_handle::{
     WaitHandleRef, WaitHandleRefFFI, WaitHandleStore, WaitHandleStoreFFI,
 };
@@ -26,13 +24,16 @@ include_cpp! {
     #include "event.h"
     #include "fallback.h"
     #include "fds.h"
+    #include "fish_indent_common.h"
     #include "flog.h"
+    #include "function.h"
+    #include "highlight.h"
     #include "io.h"
     #include "parse_constants.h"
     #include "parser.h"
     #include "parse_util.h"
+    #include "path.h"
     #include "proc.h"
-    #include "re.h"
     #include "tokenizer.h"
     #include "wildcard.h"
     #include "wutil.h"
@@ -44,6 +45,7 @@ include_cpp! {
     safety!(unsafe_ffi)
 
     generate_pod!("wcharz_t")
+    generate!("wcstring_list_ffi_t")
     generate!("make_fd_nonblocking")
     generate!("wperror")
 
@@ -53,11 +55,8 @@ include_cpp! {
     generate!("env_var_t")
     generate!("make_pipes_ffi")
 
-    generate!("valid_var_name_char")
-
     generate!("get_flog_file_fd")
-
-    generate!("parse_util_unescape_wildcards")
+    generate!("log_extra_to_flog_file")
 
     generate!("fish_wcwidth")
     generate!("fish_wcswidth")
@@ -73,6 +72,8 @@ include_cpp! {
     generate!("library_data_t")
     generate_pod!("library_data_pod_t")
 
+    generate!("highlighter_t")
+
     generate!("proc_wait_any")
 
     generate!("output_stream_t")
@@ -82,10 +83,14 @@ include_cpp! {
     generate_pod!("RustFFIProcList")
     generate_pod!("RustBuiltin")
 
+    generate!("builtin_exists")
     generate!("builtin_missing_argument")
     generate!("builtin_unknown_option")
     generate!("builtin_print_help")
     generate!("builtin_print_error_trailer")
+    generate!("builtin_get_names_ffi")
+
+    generate!("pretty_printer_t")
 
     generate!("escape_string")
     generate!("sig2wcs")
@@ -93,14 +98,6 @@ include_cpp! {
     generate!("signal_get_desc")
 
     generate!("fd_event_signaller_t")
-
-    generate_pod!("re::flags_t")
-    generate_pod!("re::re_error_t")
-    generate!("re::regex_t")
-    generate!("re::regex_result_ffi")
-    generate!("re::try_compile_ffi")
-    generate!("wcs2string")
-    generate!("str2wcstring")
 
     generate!("signal_handle")
     generate!("signal_check_cancel")
@@ -111,6 +108,20 @@ include_cpp! {
     generate!("io_chain_t")
 
     generate!("env_var_t")
+
+    generate!("function_properties_t")
+    generate!("function_properties_ref_t")
+    generate!("function_get_props_autoload")
+    generate!("function_get_definition_file")
+    generate!("function_get_copy_definition_file")
+    generate!("function_get_definition_lineno")
+    generate!("function_get_copy_definition_lineno")
+    generate!("function_get_annotated_definition")
+    generate!("function_is_copy")
+    generate!("function_exists")
+    generate!("path_get_paths_ffi")
+
+    generate!("colorize_shell")
 }
 
 impl parser_t {
@@ -212,10 +223,6 @@ impl env_stack_t {
     }
 }
 
-pub fn try_compile(anchored: &wstr, flags: &re::flags_t) -> Pin<Box<re::regex_result_ffi>> {
-    re::try_compile_ffi(&anchored.to_ffi(), flags).within_box()
-}
-
 impl job_t {
     #[allow(clippy::mut_from_ref)]
     pub fn get_procs(&self) -> &mut [UniquePtr<process_t>] {
@@ -266,12 +273,6 @@ impl From<wcharz_t> for wchar::WString {
     }
 }
 
-impl Debug for re::regex_t {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str("regex_t")
-    }
-}
-
 /// A bogus trait for turning &mut Foo into Pin<&mut Foo>.
 /// autocxx enforces that non-const methods must be called through Pin,
 /// but this means we can't pass around mutable references to types like parser_t.
@@ -297,9 +298,8 @@ impl Repin for job_t {}
 impl Repin for output_stream_t {}
 impl Repin for parser_t {}
 impl Repin for process_t {}
-impl Repin for re::regex_result_ffi {}
-
-unsafe impl Send for re::regex_t {}
+impl Repin for function_properties_ref_t {}
+impl Repin for wcstring_list_ffi_t {}
 
 pub use autocxx::c_int;
 pub use ffi::*;
@@ -336,5 +336,23 @@ impl core::convert::From<*const u8> for void_ptr {
 impl core::convert::From<*const autocxx::c_void> for void_ptr {
     fn from(value: *const autocxx::c_void) -> Self {
         Self(value as *const _)
+    }
+}
+
+impl core::convert::From<void_ptr> for *const u8 {
+    fn from(value: void_ptr) -> Self {
+        value.0 as *const _
+    }
+}
+
+impl core::convert::From<void_ptr> for *const core::ffi::c_void {
+    fn from(value: void_ptr) -> Self {
+        value.0 as *const _
+    }
+}
+
+impl core::convert::From<void_ptr> for *const autocxx::c_void {
+    fn from(value: void_ptr) -> Self {
+        value.0 as *const _
     }
 }

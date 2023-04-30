@@ -17,7 +17,9 @@
 #include <utility>
 #include <vector>
 
+#include "ast.h"
 #include "common.h"
+#include "cxx.h"
 #include "maybe.h"
 #include "parse_tree.h"
 #include "redirection.h"
@@ -52,10 +54,6 @@ using clock_ticks_t = uint64_t;
 /// \return clock ticks in seconds, or 0 on failure.
 /// This uses sysconf(_SC_CLK_TCK) to convert to seconds.
 double clock_ticks_to_seconds(clock_ticks_t ticks);
-
-namespace ast {
-struct statement_t;
-}
 
 struct job_group_t;
 using job_group_ref_t = std::shared_ptr<job_group_t>;
@@ -255,21 +253,21 @@ class process_t {
 
     /// For internal block processes only, the node of the statement.
     /// This is always either block, ifs, or switchs, never boolean or decorated.
-    parsed_source_ref_t block_node_source{};
+    rust::Box<ParsedSourceRefFFI> block_node_source;
     const ast::statement_t *internal_block_node{};
 
     struct concrete_assignment {
         wcstring variable_name;
-        wcstring_list_t values;
+        std::vector<wcstring> values;
     };
     /// The expanded variable assignments for this process, as specified by the `a=b cmd` syntax.
     std::vector<concrete_assignment> variable_assignments;
 
     /// Sets argv.
-    void set_argv(wcstring_list_t argv) { argv_ = std::move(argv); }
+    void set_argv(std::vector<wcstring> argv) { argv_ = std::move(argv); }
 
     /// Returns argv.
-    const wcstring_list_t &argv() { return argv_; }
+    const std::vector<wcstring> &argv() { return argv_; }
 
     /// Returns argv[0], or nullptr.
     const wchar_t *argv0() const { return argv_.empty() ? nullptr : argv_.front().c_str(); }
@@ -348,7 +346,7 @@ class process_t {
     process_t &operator=(const process_t &) = delete;
 
    private:
-    wcstring_list_t argv_;
+    std::vector<wcstring> argv_;
     rust::Box<redirection_spec_list_t> proc_redirection_specs_;
 
     // The wait handle. This is constructed lazily, and cached.
@@ -610,10 +608,6 @@ clock_ticks_t proc_get_jiffies(pid_t inpid);
 /// Update process time usage for all processes by calling the proc_get_jiffies function for every
 /// process of every job.
 void proc_update_jiffies(parser_t &parser);
-
-/// Perform a set of simple sanity checks on the job list. This includes making sure that only one
-/// job is in the foreground, that every process is in a valid state, etc.
-void proc_sanity_check(const parser_t &parser);
 
 /// Initializations.
 void proc_init();

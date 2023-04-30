@@ -100,31 +100,30 @@ endif()
 # List of sources for builtin functions.
 set(FISH_BUILTIN_SRCS
     src/builtin.cpp src/builtins/argparse.cpp src/builtins/bind.cpp
-    src/builtins/builtin.cpp src/builtins/cd.cpp src/builtins/command.cpp
+    src/builtins/cd.cpp
     src/builtins/commandline.cpp src/builtins/complete.cpp
     src/builtins/disown.cpp
     src/builtins/eval.cpp src/builtins/fg.cpp
     src/builtins/function.cpp src/builtins/functions.cpp src/builtins/history.cpp
-    src/builtins/jobs.cpp src/builtins/math.cpp src/builtins/printf.cpp src/builtins/path.cpp
+    src/builtins/jobs.cpp src/builtins/path.cpp
     src/builtins/read.cpp src/builtins/set.cpp
     src/builtins/set_color.cpp src/builtins/source.cpp src/builtins/status.cpp
-    src/builtins/string.cpp src/builtins/test.cpp src/builtins/type.cpp src/builtins/ulimit.cpp
+    src/builtins/string.cpp src/builtins/test.cpp src/builtins/ulimit.cpp
 )
 
 # List of other sources.
 set(FISH_SRCS
     src/ast.cpp src/autoload.cpp src/color.cpp src/common.cpp src/complete.cpp
     src/env.cpp src/env_dispatch.cpp src/env_universal_common.cpp src/event.cpp
-    src/exec.cpp src/expand.cpp src/fallback.cpp src/fish_version.cpp
+    src/exec.cpp src/expand.cpp src/fallback.cpp src/fish_indent_common.cpp src/fish_version.cpp
     src/flog.cpp src/function.cpp src/highlight.cpp
     src/history.cpp src/history_file.cpp src/input.cpp src/input_common.cpp
-    src/io.cpp src/iothread.cpp src/kill.cpp
+    src/io.cpp src/kill.cpp
     src/null_terminated_array.cpp src/operation_context.cpp src/output.cpp
-    src/pager.cpp src/parse_execution.cpp src/parse_tree.cpp src/parse_util.cpp
+    src/pager.cpp src/parse_execution.cpp src/parse_util.cpp
     src/parser.cpp src/parser_keywords.cpp src/path.cpp src/postfork.cpp
     src/proc.cpp src/re.cpp src/reader.cpp src/screen.cpp
-    src/signals.cpp src/tinyexpr.cpp
-    src/trace.cpp src/utf8.cpp
+    src/signals.cpp src/utf8.cpp
     src/wcstringutil.cpp src/wgetopt.cpp src/wildcard.cpp
     src/wutil.cpp src/fds.cpp src/rustffi.cpp
 )

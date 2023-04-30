@@ -7,18 +7,21 @@
 use autocxx::WithinUniquePtr;
 use cxx::{CxxVector, CxxWString, UniquePtr};
 use libc::pid_t;
+use std::num::NonZeroU32;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use widestring_suffix::widestrs;
 
 use crate::builtins::shared::io_streams_t;
-use crate::common::{escape_string, replace_with, EscapeFlags, EscapeStringStyle, ScopeGuard};
+use crate::common::{escape_string, scoped_push, EscapeFlags, EscapeStringStyle, ScopeGuard};
 use crate::ffi::{self, block_t, parser_t, signal_check_cancel, signal_handle, Repin};
 use crate::flog::FLOG;
+use crate::job_group::{JobId, MaybeJobId};
 use crate::signal::Signal;
 use crate::termsize;
 use crate::wchar::{wstr, WString, L};
+use crate::wchar_ext::ToWString;
 use crate::wchar_ffi::{wcharz_t, AsWstr, WCharFromFFI, WCharToFFI};
 use crate::wutil::sprintf;
 
@@ -91,9 +94,9 @@ mod event_ffi {
         fn event_print_ffi(streams: Pin<&mut io_streams_t>, type_filter: &CxxWString);
 
         #[cxx_name = "event_enqueue_signal"]
-        fn enqueue_signal(signal: usize);
+        fn enqueue_signal(signal: i32);
         #[cxx_name = "event_is_signal_observed"]
-        fn is_signal_observed(sig: usize) -> bool;
+        fn is_signal_observed(sig: i32) -> bool;
     }
 }
 
@@ -197,7 +200,7 @@ impl From<&EventType> for event_type_t {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EventDescription {
     // TODO: remove the wrapper struct and just put `EventType` where `EventDescription` is now
-    typ: EventType,
+    pub typ: EventType,
 }
 
 impl From<&event_description_t> for EventDescription {
@@ -263,14 +266,14 @@ impl From<&EventDescription> for event_description_t {
 #[derive(Debug)]
 pub struct EventHandler {
     /// Properties of the event to match.
-    desc: EventDescription,
+    pub desc: EventDescription,
     /// Name of the function to invoke.
-    function_name: WString,
+    pub function_name: WString,
     /// A flag set when an event handler is removed from the global list.
     /// Once set, this is never cleared.
-    removed: AtomicBool,
+    pub removed: AtomicBool,
     /// A flag set when an event handler is first fired.
-    fired: AtomicBool,
+    pub fired: AtomicBool,
 }
 
 impl EventHandler {
@@ -409,7 +412,7 @@ impl Event {
         }
     }
 
-    pub fn caller_exit(internal_job_id: u64, job_id: i32) -> Self {
+    pub fn caller_exit(internal_job_id: u64, job_id: MaybeJobId) -> Self {
         Self {
             desc: EventDescription {
                 typ: EventType::CallerExit {
@@ -418,7 +421,7 @@ impl Event {
             },
             arguments: vec![
                 "JOB_EXIT".into(),
-                job_id.to_string().into(),
+                job_id.to_wstring(),
                 "0".into(), // historical
             ],
         }
@@ -459,7 +462,16 @@ fn new_event_job_exit(pgid: i32, jid: u64) -> Box<Event> {
 }
 
 fn new_event_caller_exit(internal_job_id: u64, job_id: i32) -> Box<Event> {
-    Box::new(Event::caller_exit(internal_job_id, job_id))
+    Box::new(Event::caller_exit(
+        internal_job_id,
+        MaybeJobId(if job_id == -1 {
+            None
+        } else {
+            Some(JobId::new(
+                NonZeroU32::new(u32::try_from(job_id).unwrap()).unwrap(),
+            ))
+        }),
+    ))
 }
 
 impl Event {
@@ -490,8 +502,8 @@ struct PendingSignals {
 impl PendingSignals {
     /// Mark a signal as pending. This may be called from a signal handler. We expect only one
     /// signal handler to execute at once. Also note that these may be coalesced.
-    pub fn mark(&self, sig: usize) {
-        if let Some(received) = self.received.get(sig) {
+    pub fn mark(&self, sig: libc::c_int) {
+        if let Some(received) = self.received.get(usize::try_from(sig).unwrap()) {
             received.store(true, Ordering::Relaxed);
             self.counter.fetch_add(1, Ordering::Relaxed);
         }
@@ -552,25 +564,23 @@ static OBSERVED_SIGNALS: [AtomicU32; SIGNAL_COUNT] = [ATOMIC_U32_0; SIGNAL_COUNT
 static BLOCKED_EVENTS: Mutex<Vec<Event>> = Mutex::new(Vec::new());
 
 fn inc_signal_observed(sig: Signal) {
-    let index: usize = sig.into();
-    if let Some(sig) = OBSERVED_SIGNALS.get(index) {
+    if let Some(sig) = OBSERVED_SIGNALS.get(usize::from(sig)) {
         sig.fetch_add(1, Ordering::Relaxed);
     }
 }
 
 fn dec_signal_observed(sig: Signal) {
-    let index: usize = sig.into();
-    if let Some(sig) = OBSERVED_SIGNALS.get(index) {
+    if let Some(sig) = OBSERVED_SIGNALS.get(usize::from(sig)) {
         sig.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
 /// Returns whether an event listener is registered for the given signal. This is safe to call from
 /// a signal handler.
-pub fn is_signal_observed(sig: usize) -> bool {
+pub fn is_signal_observed(sig: libc::c_int) -> bool {
     // We are in a signal handler!
     OBSERVED_SIGNALS
-        .get(sig)
+        .get(usize::try_from(sig).unwrap())
         .map_or(false, |s| s.load(Ordering::Relaxed) > 0)
 }
 
@@ -676,13 +686,17 @@ fn fire_internal(parser: &mut parser_t, event: &Event) {
     );
 
     // Suppress fish_trace during events.
-    let saved_is_event = replace_with(&mut parser.libdata_pod().is_event, |old| old + 1);
-    let saved_suppress_fish_trace =
-        std::mem::replace(&mut parser.libdata_pod().suppress_fish_trace, true);
-    let mut parser = ScopeGuard::new(parser, |parser| {
-        parser.libdata_pod().is_event = saved_is_event;
-        parser.libdata_pod().suppress_fish_trace = saved_suppress_fish_trace;
-    });
+    let is_event = parser.libdata_pod().is_event;
+    let mut parser = scoped_push(
+        parser,
+        |parser| &mut parser.libdata_pod().is_event,
+        is_event + 1,
+    );
+    let mut parser = scoped_push(
+        &mut *parser,
+        |parser| &mut parser.libdata_pod().suppress_fish_trace,
+        true,
+    );
 
     // Capture the event handlers that match this event.
     let fire: Vec<_> = EVENT_HANDLERS
@@ -717,7 +731,7 @@ fn fire_internal(parser: &mut parser_t, event: &Event) {
         let saved_is_interactive =
             std::mem::replace(&mut parser.libdata_pod().is_interactive, false);
         let saved_statuses = parser.get_last_statuses().within_unique_ptr();
-        let mut parser = ScopeGuard::new(&mut parser, |parser| {
+        let mut parser = ScopeGuard::new(&mut *parser, |parser| {
             parser.pin().set_last_statuses(saved_statuses);
             parser.libdata_pod().is_interactive = saved_is_interactive;
         });
@@ -731,14 +745,14 @@ fn fire_internal(parser: &mut parser_t, event: &Event) {
             "'"
         );
 
-        let b = parser
+        let b = (*parser)
             .pin()
             .push_block(block_t::event_block((event as *const Event).cast()).within_unique_ptr());
-        parser
+        (*parser)
             .pin()
             .eval_string_ffi1(&buffer.to_ffi())
             .within_unique_ptr();
-        parser.pin().pop_block(b);
+        (*parser).pin().pop_block(b);
 
         handler.fired.store(true, Ordering::Relaxed);
         fired_one_shot |= handler.is_one_shot();
@@ -810,7 +824,7 @@ fn event_fire_delayed_ffi(parser: Pin<&mut parser_t>) {
 }
 
 /// Enqueue a signal event. Invoked from a signal handler.
-pub fn enqueue_signal(signal: usize) {
+pub fn enqueue_signal(signal: libc::c_int) {
     // Beware, we are in a signal handler
     PENDING_SIGNALS.mark(signal);
 }
@@ -894,7 +908,7 @@ pub fn print(streams: &mut io_streams_t, type_filter: &wstr) {
 
 fn event_print_ffi(streams: Pin<&mut ffi::io_streams_t>, type_filter: &CxxWString) {
     let mut streams = io_streams_t::new(streams);
-    print(&mut streams, &type_filter.from_ffi());
+    print(&mut streams, type_filter.as_wstr());
 }
 
 /// Fire a generic event with the specified name.

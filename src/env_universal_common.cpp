@@ -219,13 +219,13 @@ static const wchar_t *const ENV_NULL = L"\x1d";
 static const wchar_t UVAR_ARRAY_SEP = 0x1e;
 
 /// Decode a serialized universal variable value into a list.
-static wcstring_list_t decode_serialized(const wcstring &val) {
+static std::vector<wcstring> decode_serialized(const wcstring &val) {
     if (val == ENV_NULL) return {};
     return split_string(val, UVAR_ARRAY_SEP);
 }
 
 /// Decode a a list into a serialized universal variable value.
-static wcstring encode_serialized(const wcstring_list_t &vals) {
+static wcstring encode_serialized(const std::vector<wcstring> &vals) {
     if (vals.empty()) return ENV_NULL;
     return join_strings(vals, UVAR_ARRAY_SEP);
 }
@@ -265,8 +265,8 @@ bool env_universal_t::remove(const wcstring &key) {
     return false;
 }
 
-wcstring_list_t env_universal_t::get_names(bool show_exported, bool show_unexported) const {
-    wcstring_list_t result;
+std::vector<wcstring> env_universal_t::get_names(bool show_exported, bool show_unexported) const {
+    std::vector<wcstring> result;
     for (const auto &kv : vars) {
         const wcstring &key = kv.first;
         const env_var_t &var = kv.second;
@@ -369,7 +369,7 @@ void env_universal_t::load_from_fd(int fd, callback_data_list_t &callbacks) {
 }
 
 bool env_universal_t::load_from_path(const wcstring &path, callback_data_list_t &callbacks) {
-    return load_from_path(wcs2string(path), callbacks);
+    return load_from_path(wcs2zstring(path), callbacks);
 }
 
 bool env_universal_t::load_from_path(const std::string &path, callback_data_list_t &callbacks) {
@@ -449,7 +449,7 @@ void env_universal_t::initialize_at_path(callback_data_list_t &callbacks, wcstri
     if (path.empty()) return;
     assert(!initialized() && "Already initialized");
     vars_path_ = std::move(path);
-    narrow_vars_path_ = wcs2string(vars_path_);
+    narrow_vars_path_ = wcs2zstring(vars_path_);
 
     if (load_from_path(narrow_vars_path_, callbacks)) {
         // Successfully loaded from our normal path.
@@ -475,7 +475,7 @@ autoclose_fd_t env_universal_t::open_temporary_file(const wcstring &directory, w
     autoclose_fd_t result;
     std::string narrow_str;
     for (size_t attempt = 0; attempt < 10 && !result.valid(); attempt++) {
-        narrow_str = wcs2string(tmp_name_template);
+        narrow_str = wcs2zstring(tmp_name_template);
         result.reset(fish_mkstemp_cloexec(&narrow_str[0]));
         saved_errno = errno;
     }
@@ -800,9 +800,11 @@ bool env_universal_t::populate_1_variable(const wchar_t *input, env_var_t::env_v
 
     // Parse out the value into storage, and decode it into a variable.
     storage->clear();
-    if (!unescape_string(colon + 1, storage, 0)) {
+    auto unescaped = unescape_string(colon + 1, 0);
+    if (!unescaped) {
         return false;
     }
+    *storage = *unescaped;
     env_var_t var{decode_serialized(*storage), flags};
 
     // Parse out the key and write into the map.
@@ -1127,7 +1129,7 @@ static wcstring default_named_pipe_path() {
 static autoclose_fd_t make_fifo(const wchar_t *test_path, const wchar_t *suffix) {
     wcstring vars_path = test_path ? wcstring(test_path) : default_named_pipe_path();
     vars_path.append(suffix);
-    const std::string narrow_path = wcs2string(vars_path);
+    const std::string narrow_path = wcs2zstring(vars_path);
 
     int mkfifo_status = mkfifo(narrow_path.c_str(), 0600);
     if (mkfifo_status == -1 && errno != EEXIST) {

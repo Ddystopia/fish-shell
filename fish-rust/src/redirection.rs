@@ -40,12 +40,12 @@ mod redirection_ffi {
             target: wcharz_t,
         ) -> Box<RedirectionSpec>;
 
-        type RedirectionSpecList;
-        fn new_redirection_spec_list() -> Box<RedirectionSpecList>;
-        fn size(self: &RedirectionSpecList) -> usize;
-        fn at(self: &RedirectionSpecList, offset: usize) -> *const RedirectionSpec;
-        fn push_back(self: &mut RedirectionSpecList, spec: Box<RedirectionSpec>);
-        fn clone(self: &RedirectionSpecList) -> Box<RedirectionSpecList>;
+        type RedirectionSpecListFfi;
+        fn new_redirection_spec_list() -> Box<RedirectionSpecListFfi>;
+        fn size(self: &RedirectionSpecListFfi) -> usize;
+        fn at(self: &RedirectionSpecListFfi, offset: usize) -> *const RedirectionSpec;
+        fn push_back(self: &mut RedirectionSpecListFfi, spec: Box<RedirectionSpec>);
+        fn clone(self: &RedirectionSpecListFfi) -> Box<RedirectionSpecListFfi>;
     }
 
     /// A type that represents the action dup2(src, target).
@@ -93,15 +93,15 @@ pub struct RedirectionSpec {
     /// The redirected fd, or -1 on overflow.
     /// In the common case of a pipe, this is 1 (STDOUT_FILENO).
     /// For example, in the case of "3>&1" this will be 3.
-    fd: RawFd,
+    pub fd: RawFd,
 
     /// The redirection mode.
-    mode: RedirectionMode,
+    pub mode: RedirectionMode,
 
     /// The target of the redirection.
     /// For example in "3>&1", this will be "1".
     /// In "< file.txt" this will be "file.txt".
-    target: WString,
+    pub target: WString,
 }
 
 impl RedirectionSpec {
@@ -112,7 +112,7 @@ impl RedirectionSpec {
 
     /// Attempt to parse target as an fd.
     pub fn get_target_as_fd(&self) -> Option<RawFd> {
-        fish_wcstoi(self.target.as_char_slice().iter().copied()).ok()
+        fish_wcstoi(&self.target).ok()
     }
     fn get_target_as_fd_ffi(&self) -> SharedPtr<i32> {
         match self.get_target_as_fd() {
@@ -150,14 +150,15 @@ fn new_redirection_spec(fd: i32, mode: RedirectionMode, target: wcharz_t) -> Box
     })
 }
 
-/// TODO This should be type alias once we drop the FFI.
-pub struct RedirectionSpecList(Vec<RedirectionSpec>);
+pub type RedirectionSpecList = Vec<RedirectionSpec>;
 
-fn new_redirection_spec_list() -> Box<RedirectionSpecList> {
-    Box::new(RedirectionSpecList(Vec::new()))
+struct RedirectionSpecListFfi(RedirectionSpecList);
+
+fn new_redirection_spec_list() -> Box<RedirectionSpecListFfi> {
+    Box::new(RedirectionSpecListFfi(Vec::new()))
 }
 
-impl RedirectionSpecList {
+impl RedirectionSpecListFfi {
     fn size(&self) -> usize {
         self.0.len()
     }
@@ -165,11 +166,11 @@ impl RedirectionSpecList {
         &self.0[offset]
     }
     #[allow(clippy::boxed_local)]
-    fn push_back(self: &mut RedirectionSpecList, spec: Box<RedirectionSpec>) {
+    fn push_back(&mut self, spec: Box<RedirectionSpec>) {
         self.0.push(*spec)
     }
-    fn clone(self: &RedirectionSpecList) -> Box<RedirectionSpecList> {
-        Box::new(RedirectionSpecList(self.0.clone()))
+    fn clone(&self) -> Box<RedirectionSpecListFfi> {
+        Box::new(RedirectionSpecListFfi(self.0.clone()))
     }
 }
 

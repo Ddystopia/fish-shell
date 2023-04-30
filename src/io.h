@@ -392,8 +392,7 @@ class output_stream_t : noncopyable_t, nonmovable_t {
     bool append(const wchar_t *s) { return append(s, std::wcslen(s)); }
 
     /// Append a char.
-    bool append(wchar_t s) { return append(&s, 1); }
-    bool push_back(wchar_t c) { return append(c); }
+    bool push(wchar_t s) { return append(&s, 1); }
 
     // Append data from a narrow buffer, widening it.
     bool append_narrow_buffer(const separated_buffer_t &buffer);
@@ -512,6 +511,9 @@ struct io_streams_t : noncopyable_t {
     output_stream_t &get_out() { return out; };
     output_stream_t &get_err() { return err; };
     io_streams_t(const io_streams_t &) = delete;
+    bool get_out_redirected() { return out_is_redirected; };
+    bool ffi_stdin_is_directly_redirected() const { return stdin_is_directly_redirected; };
+    int ffi_stdin_fd() const { return stdin_fd; };
 };
 
 #endif

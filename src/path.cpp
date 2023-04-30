@@ -26,16 +26,17 @@
 #include "wutil.h"  // IWYU pragma: keep
 
 // PREFIX is defined at build time.
-static const wcstring_list_t kDefaultPath({L"/bin", L"/usr/bin", PREFIX L"/bin"});
+static const std::vector<wcstring> kDefaultPath({L"/bin", L"/usr/bin", PREFIX L"/bin"});
 
-static get_path_result_t path_get_path_core(const wcstring &cmd, const wcstring_list_t &pathsv) {
+static get_path_result_t path_get_path_core(const wcstring &cmd,
+                                            const std::vector<wcstring> &pathsv) {
     const get_path_result_t noent_res{ENOENT, wcstring{}};
     get_path_result_t result{};
 
     /// Test if the given path can be executed.
     /// \return 0 on success, an errno value on failure.
     auto test_path = [](const wcstring &path) -> int {
-        std::string narrow = wcs2string(path);
+        std::string narrow = wcs2zstring(path);
         struct stat buff;
         if (access(narrow.c_str(), X_OK) != 0 || stat(narrow.c_str(), &buff) != 0) {
             return errno;
@@ -108,7 +109,7 @@ static bool path_is_executable(const std::string &path) {
 
 /// \return whether the given path is on a remote filesystem.
 static dir_remoteness_t path_remoteness(const wcstring &path) {
-    std::string narrow = wcs2string(path);
+    std::string narrow = wcs2zstring(path);
 #if defined(__linux__)
     struct statfs buf {};
     if (statfs(narrow.c_str(), &buf) < 0) {
@@ -142,14 +143,14 @@ static dir_remoteness_t path_remoteness(const wcstring &path) {
 #endif
 }
 
-wcstring_list_t path_get_paths(const wcstring &cmd, const environment_t &vars) {
+std::vector<wcstring> path_get_paths(const wcstring &cmd, const environment_t &vars) {
     FLOGF(path, L"path_get_paths('%ls')", cmd.c_str());
-    wcstring_list_t paths;
+    std::vector<wcstring> paths;
 
     // If the command has a slash, it must be an absolute or relative path and thus we don't bother
     // looking for matching commands in the PATH var.
     if (cmd.find(L'/') != wcstring::npos) {
-        std::string narrow = wcs2string(cmd);
+        std::string narrow = wcs2zstring(cmd);
         if (path_is_executable(narrow)) paths.push_back(cmd);
         return paths;
     }
@@ -157,20 +158,24 @@ wcstring_list_t path_get_paths(const wcstring &cmd, const environment_t &vars) {
     auto path_var = vars.get(L"PATH");
     if (!path_var) return paths;
 
-    const wcstring_list_t &pathsv = path_var->as_list();
+    const std::vector<wcstring> &pathsv = path_var->as_list();
     for (auto path : pathsv) {
         if (path.empty()) continue;
         append_path_component(path, cmd);
-        std::string narrow = wcs2string(path);
+        std::string narrow = wcs2zstring(path);
         if (path_is_executable(narrow)) paths.push_back(path);
     }
 
     return paths;
 }
 
-wcstring_list_t path_apply_cdpath(const wcstring &dir, const wcstring &wd,
-                                  const environment_t &env_vars) {
-    wcstring_list_t paths;
+wcstring_list_ffi_t path_get_paths_ffi(const wcstring &cmd, const parser_t &parser) {
+    return path_get_paths(cmd, parser.vars());
+}
+
+std::vector<wcstring> path_apply_cdpath(const wcstring &dir, const wcstring &wd,
+                                        const environment_t &env_vars) {
+    std::vector<wcstring> paths;
     if (dir.at(0) == L'/') {
         // Absolute path.
         paths.push_back(dir);
@@ -180,7 +185,7 @@ wcstring_list_t path_apply_cdpath(const wcstring &dir, const wcstring &wd,
         paths.push_back(path_normalize_for_cd(wd, dir));
     } else {
         // Respect CDPATH.
-        wcstring_list_t cdpathsv;
+        std::vector<wcstring> cdpathsv;
         if (auto cdpaths = env_vars.get(L"CDPATH")) {
             cdpathsv = cdpaths->as_list();
         }
@@ -348,13 +353,13 @@ static base_directory_t make_base_directory(const wcstring &xdg_var,
     // uvars are available.
     const auto &vars = env_stack_t::globals();
     base_directory_t result{};
-    const auto xdg_dir = vars.get(xdg_var, ENV_GLOBAL | ENV_EXPORT);
-    if (!xdg_dir.missing_or_empty()) {
+    const auto xdg_dir = vars.get_unless_empty(xdg_var, ENV_GLOBAL | ENV_EXPORT);
+    if (xdg_dir) {
         result.path = xdg_dir->as_string() + L"/fish";
         result.used_xdg = true;
     } else {
-        const auto home = vars.get(L"HOME", ENV_GLOBAL | ENV_EXPORT);
-        if (!home.missing_or_empty()) {
+        const auto home = vars.get_unless_empty(L"HOME", ENV_GLOBAL | ENV_EXPORT);
+        if (home) {
             result.path = home->as_string() + non_xdg_homepath;
         }
     }

@@ -38,7 +38,7 @@ enum class end_execution_reason_t {
 
 class parse_execution_context_t : noncopyable_t {
    private:
-    parsed_source_ref_t pstree;
+    rust::Box<parsed_source_ref_t> pstree;
     parser_t *const parser;
     const operation_context_t &ctx;
 
@@ -81,7 +81,7 @@ class parse_execution_context_t : noncopyable_t {
     // Expand a command which may contain variables, producing an expand command and possibly
     // arguments. Prints an error message on error.
     end_execution_reason_t expand_command(const ast::decorated_statement_t &statement,
-                                          wcstring *out_cmd, wcstring_list_t *out_args) const;
+                                          wcstring *out_cmd, std::vector<wcstring> *out_args) const;
 
     /// Indicates whether a job is a simple block (one block, no redirections).
     bool job_is_simple_block(const ast::job_pipeline_t &job) const;
@@ -128,7 +128,7 @@ class parse_execution_context_t : noncopyable_t {
     static ast_args_list_t get_argument_nodes(const ast::argument_or_redirection_list_t &args);
 
     end_execution_reason_t expand_arguments_from_nodes(const ast_args_list_t &argument_nodes,
-                                                       wcstring_list_t *out_arguments,
+                                                       std::vector<wcstring> *out_arguments,
                                                        globspec_t glob_behavior);
 
     // Determines the list of redirections for a node.
@@ -161,7 +161,7 @@ class parse_execution_context_t : noncopyable_t {
    public:
     /// Construct a context in preparation for evaluating a node in a tree, with the given block_io.
     /// The execution context may access the parser and parent job group (if any) through ctx.
-    parse_execution_context_t(parsed_source_ref_t pstree, const operation_context_t &ctx,
+    parse_execution_context_t(rust::Box<parsed_source_ref_t> pstree, const operation_context_t &ctx,
                               io_chain_t block_io);
 
     /// Returns the current line number, indexed from 1. Not const since it touches
@@ -172,10 +172,10 @@ class parse_execution_context_t : noncopyable_t {
     int get_current_source_offset() const;
 
     /// Returns the source string.
-    const wcstring &get_source() const { return pstree->src; }
+    const wcstring &get_source() const { return pstree->src(); }
 
     /// Return the parsed ast.
-    const ast::ast_t &ast() const { return pstree->ast; }
+    const ast::ast_t &ast() const { return pstree->ast(); }
 
     /// Start executing at the given node. Returns 0 if there was no error, 1 if there was an
     /// error.

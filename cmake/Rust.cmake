@@ -1,15 +1,25 @@
-include(FetchContent)
+if(EXISTS "${CMAKE_SOURCE_DIR}/corrosion-vendor/")
+    add_subdirectory("${CMAKE_SOURCE_DIR}/corrosion-vendor/")
+else()
+    include(FetchContent)
 
-# Don't let Corrosion's tests interfere with ours.
-set(CORROSION_TESTS OFF CACHE BOOL "" FORCE)
+    # Don't let Corrosion's tests interfere with ours.
+    set(CORROSION_TESTS OFF CACHE BOOL "" FORCE)
 
-FetchContent_Declare(
-    Corrosion
-    GIT_REPOSITORY https://github.com/mqudsi/corrosion
-    GIT_TAG fish
-)
+    FetchContent_Declare(
+        Corrosion
+        GIT_REPOSITORY https://github.com/mqudsi/corrosion
+        GIT_TAG fish
+    )
 
-FetchContent_MakeAvailable(Corrosion)
+    FetchContent_MakeAvailable(Corrosion)
+
+    add_custom_target(corrosion-vendor.tar.gz
+        COMMAND git archive --format tar.gz --output "${CMAKE_BINARY_DIR}/corrosion-vendor.tar.gz"
+        --prefix corrosion-vendor/ HEAD
+        WORKING_DIRECTORY ${corrosion_SOURCE_DIR}
+    )
+endif()
 
 set(fish_rust_target "fish-rust")
 
@@ -40,7 +50,12 @@ else()
 endif()
 
 # Tell Cargo where our build directory is so it can find config.h.
-corrosion_set_env_vars(${fish_rust_target} "FISH_BUILD_DIR=${CMAKE_BINARY_DIR}" "FISH_AUTOCXX_GEN_DIR=${fish_autocxx_gen_dir}" "FISH_RUST_TARGET_DIR=${rust_target_dir}")
+corrosion_set_env_vars(${fish_rust_target}
+    "FISH_BUILD_DIR=${CMAKE_BINARY_DIR}"
+    "FISH_AUTOCXX_GEN_DIR=${fish_autocxx_gen_dir}"
+    "FISH_RUST_TARGET_DIR=${rust_target_dir}"
+    "PREFIX=${CMAKE_INSTALL_PREFIX}"
+)
 
 target_include_directories(${fish_rust_target} INTERFACE
     "${rust_target_dir}/cxxbridge/${fish_rust_target}/src/"

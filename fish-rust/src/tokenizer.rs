@@ -1,12 +1,13 @@
 //! A specialized tokenizer for tokenizing the fish language. In the future, the tokenizer should be
 //! extended to support marks, tokenizing multiple strings and disposing of unused string segments.
 
-use crate::ffi::{valid_var_name_char, wcharz_t};
+use crate::common::valid_var_name_char;
+use crate::ffi::wcharz_t;
 use crate::future_feature_flags::{feature_test, FeatureFlag};
 use crate::parse_constants::SOURCE_OFFSET_INVALID;
 use crate::redirection::RedirectionMode;
 use crate::wchar::{wstr, WExt, WString, L};
-use crate::wchar_ffi::{wchar_t, WCharFromFFI, WCharToFFI};
+use crate::wchar_ffi::{wchar_t, AsWstr, WCharToFFI};
 use crate::wutil::wgettext;
 use cxx::{CxxWString, SharedPtr, UniquePtr};
 use libc::{c_int, STDIN_FILENO, STDOUT_FILENO};
@@ -257,12 +258,18 @@ impl From<TokenizerError> for &'static wstr {
     }
 }
 
+impl printf_compat::args::ToArg<'static> for TokenizerError {
+    fn to_arg(self) -> printf_compat::args::Arg<'static> {
+        printf_compat::args::Arg::Str(self.into())
+    }
+}
+
 impl Tok {
     fn new(r#type: TokenType) -> Tok {
         Tok {
             offset: 0,
             length: 0,
-            error_offset_within_token: SOURCE_OFFSET_INVALID,
+            error_offset_within_token: SOURCE_OFFSET_INVALID.try_into().unwrap(),
             error_length: 0,
             error: TokenizerError::none,
             type_: r#type,
@@ -276,7 +283,31 @@ impl Tok {
         &str[self.offset as usize..(self.offset + self.length) as usize]
     }
     fn get_source_ffi(self: &Tok, str: &CxxWString) -> UniquePtr<CxxWString> {
-        self.get_source(&str.from_ffi()).to_ffi()
+        self.get_source(str.as_wstr()).to_ffi()
+    }
+    pub fn set_offset(&mut self, value: usize) {
+        self.offset = value.try_into().unwrap();
+    }
+    pub fn offset(&self) -> usize {
+        self.offset.try_into().unwrap()
+    }
+    pub fn length(&self) -> usize {
+        self.length.try_into().unwrap()
+    }
+    pub fn set_length(&mut self, value: usize) {
+        self.length = value.try_into().unwrap();
+    }
+    pub fn set_error_offset_within_token(&mut self, value: usize) {
+        self.error_offset_within_token = value.try_into().unwrap();
+    }
+    pub fn error_offset_within_token(&self) -> usize {
+        self.error_offset_within_token.try_into().unwrap()
+    }
+    pub fn error_length(&self) -> usize {
+        self.error_length.try_into().unwrap()
+    }
+    pub fn set_error_length(&mut self, value: usize) {
+        self.error_length = value.try_into().unwrap();
     }
 }
 
@@ -326,10 +357,10 @@ fn new_tokenizer(start: wcharz_t, flags: u8) -> Box<Tokenizer> {
     Box::new(Tokenizer::new(start.into(), TokFlags(flags)))
 }
 
-impl Tokenizer {
-    /// Returns the next token, or none if we are at the end.
-    pub fn next(&mut self) -> Option<Tok> {
-        // TODO Implement IntoIterator.
+impl Iterator for Tokenizer {
+    type Item = Tok;
+
+    fn next(&mut self) -> Option<Self::Item> {
         if !self.has_next {
             return None;
         }
@@ -519,6 +550,8 @@ impl Tokenizer {
             }
         }
     }
+}
+impl Tokenizer {
     fn next_ffi(&mut self) -> UniquePtr<Tok> {
         match self.next() {
             Some(tok) => UniquePtr::new(tok),
@@ -809,8 +842,8 @@ impl Tokenizer {
         }
 
         let mut result = Tok::new(TokenType::string);
-        result.offset = buff_start as u32;
-        result.length = (self.token_cursor - buff_start) as u32;
+        result.set_offset(buff_start);
+        result.set_length(self.token_cursor - buff_start);
         result
     }
 }
@@ -934,7 +967,7 @@ pub fn tok_command(str: &wstr) -> WString {
     WString::new()
 }
 fn tok_command_ffi(str: &CxxWString) -> UniquePtr<CxxWString> {
-    tok_command(&str.from_ffi()).to_ffi()
+    tok_command(str.as_wstr()).to_ffi()
 }
 
 impl TryFrom<&wstr> for PipeOrRedir {
@@ -1357,7 +1390,7 @@ pub fn variable_assignment_equals_pos(txt: &wstr) -> Option<usize> {
     // TODO bracket indexing
     for (i, c) in txt.chars().enumerate() {
         if !found_potential_variable {
-            if !valid_var_name_char(c as wchar_t) {
+            if !valid_var_name_char(c) {
                 return None;
             }
             found_potential_variable = true;
@@ -1365,7 +1398,7 @@ pub fn variable_assignment_equals_pos(txt: &wstr) -> Option<usize> {
             if c == '=' {
                 return Some(i);
             }
-            if !valid_var_name_char(c as wchar_t) {
+            if !valid_var_name_char(c) {
                 return None;
             }
         }
@@ -1374,7 +1407,7 @@ pub fn variable_assignment_equals_pos(txt: &wstr) -> Option<usize> {
 }
 
 fn variable_assignment_equals_pos_ffi(txt: &CxxWString) -> SharedPtr<usize> {
-    match variable_assignment_equals_pos(&txt.from_ffi()) {
+    match variable_assignment_equals_pos(txt.as_wstr()) {
         Some(p) => SharedPtr::new(p),
         None => SharedPtr::null(),
     }

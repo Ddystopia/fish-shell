@@ -111,10 +111,10 @@ static void autoload_names(std::unordered_set<wcstring> &names, bool get_hidden)
 
     // TODO: justify this.
     auto &vars = env_stack_t::principal();
-    const auto path_var = vars.get(L"fish_function_path");
-    if (path_var.missing_or_empty()) return;
+    const auto path_var = vars.get_unless_empty(L"fish_function_path");
+    if (!path_var) return;
 
-    const wcstring_list_t &path_list = path_var->as_list();
+    const std::vector<wcstring> &path_list = path_var->as_list();
 
     for (i = 0; i < path_list.size(); i++) {
         const wcstring &ndir_str = path_list.at(i);
@@ -165,6 +165,26 @@ function_properties_ref_t function_get_props(const wcstring &name) {
     return function_set.acquire()->get_props(name);
 }
 
+wcstring function_get_definition_file(const function_properties_t &props) {
+    return props.definition_file ? *props.definition_file : L"";
+}
+
+wcstring function_get_copy_definition_file(const function_properties_t &props) {
+    return props.copy_definition_file ? *props.copy_definition_file : L"";
+}
+bool function_is_copy(const function_properties_t &props) { return props.is_copy; }
+int function_get_definition_lineno(const function_properties_t &props) {
+    return props.definition_lineno();
+}
+int function_get_copy_definition_lineno(const function_properties_t &props) {
+    return props.copy_definition_lineno;
+}
+
+wcstring function_get_annotated_definition(const function_properties_t &props,
+                                           const wcstring &name) {
+    return props.annotated_definition(name);
+}
+
 function_properties_ref_t function_get_props_autoload(const wcstring &name, parser_t &parser) {
     parser.assert_can_execute();
     if (parser_keywords_is_reserved(name)) return nullptr;
@@ -206,13 +226,14 @@ void function_remove(const wcstring &name) {
 static wcstring get_function_body_source(const function_properties_t &props) {
     // We want to preserve comments that the AST attaches to the header (#5285).
     // Take everything from the end of the header to the 'end' keyword.
-    auto header_src = props.func_node->header->try_source_range();
-    auto end_kw_src = props.func_node->end.try_source_range();
-    if (header_src && end_kw_src) {
-        uint32_t body_start = header_src->start + header_src->length;
-        uint32_t body_end = end_kw_src->start;
+    if (props.func_node->header().ptr()->try_source_range() &&
+        props.func_node->end().try_source_range()) {
+        auto header_src = props.func_node->header().ptr()->source_range();
+        auto end_kw_src = props.func_node->end().range();
+        uint32_t body_start = header_src.start + header_src.length;
+        uint32_t body_end = end_kw_src.start;
         assert(body_start <= body_end && "end keyword should come after header");
-        return wcstring(props.parsed_source->src, body_start, body_end - body_start);
+        return wcstring(props.parsed_source->src(), body_start, body_end - body_start);
     }
     return wcstring{};
 }
@@ -254,7 +275,7 @@ bool function_copy(const wcstring &name, const wcstring &new_name, parser_t &par
     return true;
 }
 
-wcstring_list_t function_get_names(bool get_hidden) {
+std::vector<wcstring> function_get_names(bool get_hidden) {
     std::unordered_set<wcstring> names;
     auto funcset = function_set.acquire();
     autoload_names(names, get_hidden);
@@ -267,7 +288,7 @@ wcstring_list_t function_get_names(bool get_hidden) {
         }
         names.insert(name);
     }
-    return wcstring_list_t(names.begin(), names.end());
+    return std::vector<wcstring>(names.begin(), names.end());
 }
 
 void function_invalidate_path() {
@@ -275,7 +296,7 @@ void function_invalidate_path() {
     // Note we don't want to risk removal during iteration; we expect this to be called
     // infrequently.
     auto funcset = function_set.acquire();
-    wcstring_list_t autoloadees;
+    std::vector<wcstring> autoloadees;
     for (const auto &kv : funcset->funcs) {
         if (kv.second->is_autoload) {
             autoloadees.push_back(kv.first);
@@ -285,6 +306,25 @@ void function_invalidate_path() {
         funcset->remove(name);
     }
     funcset->autoloader.clear();
+}
+
+function_properties_t::function_properties_t() : parsed_source(empty_parsed_source_ref()) {}
+
+function_properties_t::function_properties_t(const function_properties_t &other)
+    : parsed_source(empty_parsed_source_ref()) {
+    *this = other;
+}
+
+function_properties_t &function_properties_t::operator=(const function_properties_t &other) {
+    parsed_source = other.parsed_source->clone();
+    func_node = other.func_node;
+    named_arguments = other.named_arguments;
+    description = other.description;
+    inherit_vars = other.inherit_vars;
+    shadow_scope = other.shadow_scope;
+    is_autoload = other.is_autoload;
+    definition_file = other.definition_file;
+    return *this;
 }
 
 wcstring function_properties_t::annotated_definition(const wcstring &name) const {
@@ -350,7 +390,7 @@ wcstring function_properties_t::annotated_definition(const wcstring &name) const
         }
     }
 
-    const wcstring_list_t &named = this->named_arguments;
+    const std::vector<wcstring> &named = this->named_arguments;
     if (!named.empty()) {
         append_format(out, L" --argument");
         for (const auto &name : named) {
@@ -394,10 +434,10 @@ int function_properties_t::definition_lineno() const {
     // return one plus the number of newlines at offsets less than the start of our function's
     // statement (which includes the header).
     // TODO: merge with line_offset_of_character_at_offset?
-    auto source_range = func_node->try_source_range();
-    assert(source_range && "Function has no source range");
-    uint32_t func_start = source_range->start;
-    const wcstring &source = parsed_source->src;
+    assert(func_node->try_source_range() && "Function has no source range");
+    auto source_range = func_node->source_range();
+    uint32_t func_start = source_range.start;
+    const wcstring &source = parsed_source->src();
     assert(func_start <= source.size() && "function start out of bounds");
     return 1 + std::count(source.begin(), source.begin() + func_start, L'\n');
 }

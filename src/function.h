@@ -8,19 +8,20 @@
 #include <memory>
 #include <string>
 
+#include "ast.h"
 #include "common.h"
 #include "parse_tree.h"
 
 class parser_t;
 
-namespace ast {
-struct block_statement_t;
-}
-
 /// A function's constant properties. These do not change once initialized.
 struct function_properties_t {
+    function_properties_t();
+    function_properties_t(const function_properties_t &other);
+    function_properties_t &operator=(const function_properties_t &other);
+
     /// Parsed source containing the function.
-    parsed_source_ref_t parsed_source;
+    rust::Box<parsed_source_ref_t> parsed_source;
 
     /// Node containing the function statement, pointing into parsed_source.
     /// We store block_statement, not job_list, so that comments attached to the header are
@@ -28,14 +29,14 @@ struct function_properties_t {
     const ast::block_statement_t *func_node;
 
     /// List of all named arguments for this function.
-    wcstring_list_t named_arguments;
+    std::vector<wcstring> named_arguments;
 
     /// Description of the function.
     wcstring description;
 
     /// Mapping of all variables that were inherited from the function definition scope to their
     /// values.
-    std::map<wcstring, wcstring_list_t> inherit_vars;
+    std::map<wcstring, std::vector<wcstring>> inherit_vars;
 
     /// Set to true if invoking this function shadows the variables of the underlying function.
     bool shadow_scope{true};
@@ -67,7 +68,8 @@ struct function_properties_t {
     wcstring annotated_definition(const wcstring &name) const;
 };
 
-using function_properties_ref_t = std::shared_ptr<const function_properties_t>;
+// FIXME: Morally, this is const, but cxx doesn't get it
+using function_properties_ref_t = std::shared_ptr<function_properties_t>;
 
 /// Add a function. This may mutate \p props to set is_autoload.
 void function_add(wcstring name, std::shared_ptr<function_properties_t> props);
@@ -77,6 +79,15 @@ void function_remove(const wcstring &name);
 
 /// \return the properties for a function, or nullptr if none. This does not trigger autoloading.
 function_properties_ref_t function_get_props(const wcstring &name);
+
+/// Guff to work around cxx not getting function_properties_t.
+wcstring function_get_definition_file(const function_properties_t &props);
+wcstring function_get_copy_definition_file(const function_properties_t &props);
+bool function_is_copy(const function_properties_t &props);
+int function_get_definition_lineno(const function_properties_t &props);
+int function_get_copy_definition_lineno(const function_properties_t &props);
+wcstring function_get_annotated_definition(const function_properties_t &props,
+                                           const wcstring &name);
 
 /// \return the properties for a function, or nullptr if none, perhaps triggering autoloading.
 function_properties_ref_t function_get_props_autoload(const wcstring &name, parser_t &parser);
@@ -100,7 +111,7 @@ bool function_exists_no_autoload(const wcstring &cmd);
 /// Returns all function names.
 ///
 /// \param get_hidden whether to include hidden functions, i.e. ones starting with an underscore.
-wcstring_list_t function_get_names(bool get_hidden);
+std::vector<wcstring> function_get_names(bool get_hidden);
 
 /// Creates a new function using the same definition as the specified function. Returns true if copy
 /// is successful.

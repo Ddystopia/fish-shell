@@ -68,7 +68,7 @@ class block_t {
     uint64_t event_blocks{};
 
     // If this is a function block, the function args. Otherwise empty.
-    wcstring_list_t function_args{};
+    std::vector<wcstring> function_args{};
 
     /// Name of file that created this block.
     filename_ref_t src_filename{};
@@ -103,7 +103,7 @@ class block_t {
     /// Entry points for creating blocks.
     static block_t if_block();
     static block_t event_block(const void *evt_);
-    static block_t function_block(wcstring name, wcstring_list_t args, bool shadows);
+    static block_t function_block(wcstring name, std::vector<wcstring> args, bool shadows);
     static block_t source_block(filename_ref_t src);
     static block_t for_block();
     static block_t while_block();
@@ -210,7 +210,7 @@ struct library_data_t : public library_data_pod_t {
     /// A stack of fake values to be returned by builtin_commandline. This is used by the completion
     /// machinery when wrapping: e.g. if `tig` wraps `git` then git completions need to see git on
     /// the command line.
-    wcstring_list_t transient_commandlines{};
+    std::vector<wcstring> transient_commandlines{};
 
     /// A file descriptor holding the current working directory, for use in openat().
     /// This is never null and never invalid.
@@ -324,6 +324,8 @@ class parser_t : public std::enable_shared_from_this<parser_t> {
     /// Global event blocks.
     uint64_t global_event_blocks{};
 
+    eval_res_t eval(const wcstring &cmd, const io_chain_t &io);
+
     /// Evaluate the expressions contained in cmd.
     ///
     /// \param cmd the string to evaluate
@@ -332,18 +334,16 @@ class parser_t : public std::enable_shared_from_this<parser_t> {
     /// \param block_type The type of block to push on the block stack, which must be either 'top'
     /// or 'subst'.
     /// \return the result of evaluation.
-    eval_res_t eval(const wcstring &cmd, const io_chain_t &io,
-                    const job_group_ref_t &job_group = {},
-                    block_type_t block_type = block_type_t::top);
+    eval_res_t eval_with(const wcstring &cmd, const io_chain_t &io,
+                         const job_group_ref_t &job_group, block_type_t block_type);
 
-    /// An ffi overload of `eval(const wcstring &cmd, ...)` but without the extra parameters.
     eval_res_t eval_string_ffi1(const wcstring &cmd);
 
     /// Evaluate the parsed source ps.
     /// Because the source has been parsed, a syntax error is impossible.
-    eval_res_t eval(const parsed_source_ref_t &ps, const io_chain_t &io,
-                    const job_group_ref_t &job_group = {},
-                    block_type_t block_type = block_type_t::top);
+    eval_res_t eval_parsed_source(const parsed_source_ref_t &ps, const io_chain_t &io,
+                                  const job_group_ref_t &job_group = {},
+                                  block_type_t block_type = block_type_t::top);
 
     /// Evaluates a node.
     /// The node type must be ast_t::statement_t or ast::job_list_t.
@@ -383,6 +383,8 @@ class parser_t : public std::enable_shared_from_this<parser_t> {
     /// Return the list of blocks. The first block is at the top.
     const std::deque<block_t> &blocks() const { return block_list; }
 
+    size_t blocks_size() const { return block_list.size(); }
+
     /// Get the list of jobs.
     job_list_t &jobs() { return job_list; }
     const job_list_t &jobs() const { return job_list; }
@@ -418,7 +420,7 @@ class parser_t : public std::enable_shared_from_this<parser_t> {
     /// Cover of vars().set(), which also fires any returned event handlers.
     /// \return a value like ENV_OK.
     int set_var_and_fire(const wcstring &key, env_mode_flags_t mode, wcstring val);
-    int set_var_and_fire(const wcstring &key, env_mode_flags_t mode, wcstring_list_t vals);
+    int set_var_and_fire(const wcstring &key, env_mode_flags_t mode, std::vector<wcstring> vals);
 
     /// Update any universal variables and send event handlers.
     /// If \p always is set, then do it even if we have no pending changes (that is, look for
@@ -500,6 +502,7 @@ class parser_t : public std::enable_shared_from_this<parser_t> {
     RustFFIJobList ffi_jobs() const;
     library_data_pod_t *ffi_libdata_pod();
     job_t *ffi_job_get_from_pid(int pid) const;
+    const library_data_pod_t &ffi_libdata_pod_const() const;
 
     /// autocxx junk.
     bool ffi_has_funtion_block() const;

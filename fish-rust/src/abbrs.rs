@@ -1,20 +1,17 @@
 #![allow(clippy::extra_unused_lifetimes, clippy::needless_lifetimes)]
 use std::{
     collections::HashSet,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Mutex, MutexGuard},
 };
 
-use crate::wchar::{wstr, WString};
-use crate::{
-    wchar::L,
-    wchar_ffi::{WCharFromFFI, WCharToFFI},
-};
-use cxx::{CxxWString, UniquePtr};
+use crate::wchar::{wstr, WString, L};
+use crate::wchar_ffi::{AsWstr, WCharFromFFI, WCharToFFI};
+use cxx::CxxWString;
 use once_cell::sync::Lazy;
 
 use crate::abbrs::abbrs_ffi::abbrs_replacer_t;
-use crate::ffi::re::regex_t;
 use crate::parse_constants::SourceRange;
+use pcre2::utf32::Regex;
 
 use self::abbrs_ffi::{abbreviation_t, abbrs_position_t, abbrs_replacement_t};
 
@@ -87,8 +84,7 @@ mod abbrs_ffi {
     }
 }
 
-static abbrs: Lazy<Arc<Mutex<AbbreviationSet>>> =
-    Lazy::new(|| Arc::new(Mutex::new(Default::default())));
+static abbrs: Lazy<Mutex<AbbreviationSet>> = Lazy::new(|| Mutex::new(Default::default()));
 
 pub fn with_abbrs<R>(cb: impl FnOnce(&AbbreviationSet) -> R) -> R {
     let abbrs_g = abbrs.lock().unwrap();
@@ -130,7 +126,7 @@ pub struct Abbreviation {
     /// If unset, the key is to be interpreted literally.
     /// Note that the fish interface enforces that regexes match the entire token;
     /// we accomplish this by surrounding the regex in ^ and $.
-    pub regex: Option<UniquePtr<regex_t>>,
+    pub regex: Option<Regex>,
 
     /// Replacement string.
     pub replacement: WString,
@@ -180,10 +176,12 @@ impl Abbreviation {
         if !self.matches_position(position) {
             return false;
         }
-        self.regex
-            .as_ref()
-            .map(|r| r.matches_ffi(&token.to_ffi()))
-            .unwrap_or(self.key == token)
+        match &self.regex {
+            Some(r) => r
+                .is_match(token.as_char_slice())
+                .expect("regex match should not error"),
+            None => self.key == token,
+        }
     }
 
     // \return if we expand in a given position.
@@ -351,14 +349,14 @@ impl AbbreviationSet {
 /// \return the list of replacers for an input token, in priority order, using the global set.
 /// The \p position is given to describe where the token was found.
 fn abbrs_match_ffi(token: &CxxWString, position: abbrs_position_t) -> Vec<abbrs_replacer_t> {
-    with_abbrs(|set| set.r#match(&token.from_ffi(), position.into()))
+    with_abbrs(|set| set.r#match(token.as_wstr(), position.into()))
         .into_iter()
         .map(|r| r.into())
         .collect()
 }
 
 fn abbrs_has_match_ffi(token: &CxxWString, position: abbrs_position_t) -> bool {
-    with_abbrs(|set| set.has_match(&token.from_ffi(), position.into()))
+    with_abbrs(|set| set.has_match(token.as_wstr(), position.into()))
 }
 
 fn abbrs_list_ffi() -> Vec<abbreviation_t> {
@@ -427,7 +425,7 @@ impl<'a> GlobalAbbrs<'a> {
     }
 
     fn erase(&mut self, name: &CxxWString) {
-        self.g.erase(&name.from_ffi());
+        self.g.erase(name.as_wstr());
     }
 }
 use crate::ffi_tests::add_test;

@@ -45,6 +45,7 @@ Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA
 #include "expand.h"
 #include "fallback.h"  // IWYU pragma: keep
 #include "fds.h"
+#include "ffi_baggage.h"
 #include "ffi_init.rs.h"
 #include "fish_version.h"
 #include "flog.h"
@@ -264,17 +265,16 @@ static int run_command_list(parser_t &parser, const std::vector<std::string> &cm
         wcstring cmd_wcs = str2wcstring(cmd);
         // Parse into an ast and detect errors.
         auto errors = new_parse_error_list();
-        auto ast = ast::ast_t::parse(cmd_wcs, parse_flag_none, &*errors);
-        bool errored = ast.errored();
+        auto ast = ast_parse(cmd_wcs, parse_flag_none, &*errors);
+        bool errored = ast->errored();
         if (!errored) {
-            errored = parse_util_detect_errors(ast, cmd_wcs, &*errors);
+            errored = parse_util_detect_errors(*ast, cmd_wcs, &*errors);
         }
         if (!errored) {
             // Construct a parsed source ref.
             // Be careful to transfer ownership, this could be a very large string.
-            parsed_source_ref_t ps =
-                std::make_shared<parsed_source_t>(std::move(cmd_wcs), std::move(ast));
-            parser.eval(ps, io);
+            auto ps = new_parsed_source_ref(cmd_wcs, *ast);
+            parser.eval_parsed_source(*ps, io, {}, block_type_t::top);
         } else {
             wcstring sb;
             parser.get_backtrace(cmd_wcs, *errors, sb);
@@ -428,8 +428,6 @@ int main(int argc, char **argv) {
     int my_optind = 0;
 
     program_name = L"fish";
-    set_main_thread();
-    setup_fork_guards();
     rust_init();
     signal_unblock_all();
 
@@ -559,7 +557,7 @@ int main(int argc, char **argv) {
 
         // Pass additional args as $argv.
         // Note that we *don't* support setting argv[0]/$0, unlike e.g. bash.
-        wcstring_list_t list;
+        std::vector<wcstring> list;
         for (char **ptr = argv + my_optind; *ptr; ptr++) {
             list.push_back(str2wcstring(*ptr));
         }
@@ -580,7 +578,7 @@ int main(int argc, char **argv) {
             FLOGF(error, _(L"Error reading script file '%s':"), file);
             perror("error");
         } else {
-            wcstring_list_t list;
+            std::vector<wcstring> list;
             for (char **ptr = argv + my_optind; *ptr; ptr++) {
                 list.push_back(str2wcstring(*ptr));
             }

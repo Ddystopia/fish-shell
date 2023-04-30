@@ -1,9 +1,10 @@
-use crate::builtins::wait;
-use crate::ffi::{self, parser_t, wcharz_t, Repin, RustBuiltin};
-use crate::wchar::{self, wstr, L};
-use crate::wchar_ffi::{c_str, empty_wstring};
+use crate::builtins::{printf, wait};
+use crate::ffi::{self, parser_t, wcstring_list_ffi_t, Repin, RustBuiltin};
+use crate::wchar::{wstr, WString, L};
+use crate::wchar_ffi::{c_str, empty_wstring, WCharFromFFI};
 use crate::wgetopt::{wgetopter_t, wopt, woption, woption_argument_t};
 use libc::c_int;
+use std::os::fd::RawFd;
 use std::pin::Pin;
 
 #[cxx::bridge]
@@ -14,6 +15,7 @@ mod builtins_ffi {
         include!("builtin.h");
 
         type wcharz_t = crate::ffi::wcharz_t;
+        type wcstring_list_ffi_t = crate::ffi::wcstring_list_ffi_t;
         type parser_t = crate::ffi::parser_t;
         type io_streams_t = crate::ffi::io_streams_t;
         type RustBuiltin = crate::ffi::RustBuiltin;
@@ -22,13 +24,11 @@ mod builtins_ffi {
         fn rust_run_builtin(
             parser: Pin<&mut parser_t>,
             streams: Pin<&mut io_streams_t>,
-            cpp_args: &Vec<wcharz_t>,
+            cpp_args: &wcstring_list_ffi_t,
             builtin: RustBuiltin,
             status_code: &mut i32,
         ) -> bool;
     }
-
-    impl Vec<wcharz_t> {}
 }
 
 /// Error message when too many arguments are supplied to a builtin.
@@ -37,16 +37,42 @@ pub const BUILTIN_ERR_TOO_MANY_ARGUMENTS: &str = "%ls: too many arguments\n";
 /// Error message when integer expected
 pub const BUILTIN_ERR_NOT_NUMBER: &str = "%ls: %ls: invalid integer\n";
 
+/// Error messages for unexpected args.
+pub const BUILTIN_ERR_ARG_COUNT0: &str = "%ls: missing argument\n";
 pub const BUILTIN_ERR_ARG_COUNT1: &str = "%ls: expected %d arguments; got %d\n";
+pub const BUILTIN_ERR_ARG_COUNT2: &str = "%ls: %ls: expected %d arguments; got %d\n";
+pub const BUILTIN_ERR_MIN_ARG_COUNT1: &str = "%ls: expected >= %d arguments; got %d\n";
+pub const BUILTIN_ERR_MAX_ARG_COUNT1: &str = "%ls: expected <= %d arguments; got %d\n";
 
-/// A handy return value for successful builtins.
+/// Error message on invalid combination of options.
+pub const BUILTIN_ERR_COMBO: &str = "%ls: invalid option combination\n";
+pub const BUILTIN_ERR_COMBO2: &str = "%ls: invalid option combination, %ls\n";
+
+// Return values (`$status` values for fish scripts) for various situations.
+
+/// The status code used for normal exit in a command.
 pub const STATUS_CMD_OK: Option<c_int> = Some(0);
-
 /// The status code used for failure exit in a command (but not if the args were invalid).
 pub const STATUS_CMD_ERROR: Option<c_int> = Some(1);
-
-/// A handy return value for invalid args.
+/// The status code used for invalid arguments given to a command. This is distinct from valid
+/// arguments that might result in a command failure. An invalid args condition is something
+/// like an unrecognized flag, missing or too many arguments, an invalid integer, etc.
 pub const STATUS_INVALID_ARGS: Option<c_int> = Some(2);
+
+/// The status code used when a command was not found.
+pub const STATUS_CMD_UNKNOWN: Option<c_int> = Some(127);
+
+/// The status code used when an external command can not be run.
+pub const STATUS_NOT_EXECUTABLE: Option<c_int> = Some(126);
+
+/// The status code used when a wildcard had no matches.
+pub const STATUS_UNMATCHED_WILDCARD: Option<c_int> = Some(124);
+/// The status code used when illegal command name is encountered.
+pub const STATUS_ILLEGAL_CMD: Option<c_int> = Some(123);
+/// The status code used when `read` is asked to consume too much data.
+pub const STATUS_READ_TOO_MUCH: Option<c_int> = Some(122);
+/// The status code when an expansion fails, for example, "$foo["
+pub const STATUS_EXPAND_ERROR: Option<c_int> = Some(121);
 
 /// A wrapper around output_stream_t.
 pub struct output_stream_t(*mut ffi::output_stream_t);
@@ -61,6 +87,11 @@ impl output_stream_t {
     pub fn append<Str: AsRef<wstr>>(&mut self, s: Str) -> bool {
         self.ffi().append1(c_str!(s))
     }
+
+    /// Append a char.
+    pub fn append1(&mut self, c: char) -> bool {
+        self.append(wstr::from_char_slice(&[c]))
+    }
 }
 
 // Convenience wrappers around C++ io_streams_t.
@@ -68,14 +99,21 @@ pub struct io_streams_t {
     streams: *mut builtins_ffi::io_streams_t,
     pub out: output_stream_t,
     pub err: output_stream_t,
+    pub out_is_redirected: bool,
 }
 
 impl io_streams_t {
     pub fn new(mut streams: Pin<&mut builtins_ffi::io_streams_t>) -> io_streams_t {
         let out = output_stream_t(streams.as_mut().get_out().unpin());
         let err = output_stream_t(streams.as_mut().get_err().unpin());
+        let out_is_redirected = streams.as_mut().get_out_redirected();
         let streams = streams.unpin();
-        io_streams_t { streams, out, err }
+        io_streams_t {
+            streams,
+            out,
+            err,
+            out_is_redirected,
+        }
     }
 
     pub fn ffi_pin(&mut self) -> Pin<&mut builtins_ffi::io_streams_t> {
@@ -85,23 +123,31 @@ impl io_streams_t {
     pub fn ffi_ref(&self) -> &builtins_ffi::io_streams_t {
         unsafe { &*self.streams }
     }
+
+    pub fn stdin_is_directly_redirected(&self) -> bool {
+        self.ffi_ref().ffi_stdin_is_directly_redirected()
+    }
+
+    pub fn stdin_fd(&self) -> Option<RawFd> {
+        let ret = self.ffi_ref().ffi_stdin_fd().0;
+
+        if ret < 0 {
+            None
+        } else {
+            Some(ret)
+        }
+    }
 }
 
 fn rust_run_builtin(
     parser: Pin<&mut parser_t>,
     streams: Pin<&mut builtins_ffi::io_streams_t>,
-    cpp_args: &Vec<wcharz_t>,
+    cpp_args: &wcstring_list_ffi_t,
     builtin: RustBuiltin,
     status_code: &mut i32,
 ) -> bool {
-    let mut storage = Vec::<wchar::WString>::new();
-    for arg in cpp_args {
-        storage.push(arg.into());
-    }
-    let mut args = Vec::new();
-    for arg in &storage {
-        args.push(arg.as_utfstr());
-    }
+    let storage: Vec<WString> = cpp_args.from_ffi();
+    let mut args: Vec<&wstr> = storage.iter().map(|s| s.as_utfstr()).collect();
     let streams = &mut io_streams_t::new(streams);
 
     match run_builtin(parser.unpin(), streams, args.as_mut_slice(), builtin) {
@@ -123,15 +169,20 @@ pub fn run_builtin(
         RustBuiltin::Abbr => super::abbr::abbr(parser, streams, args),
         RustBuiltin::Bg => super::bg::bg(parser, streams, args),
         RustBuiltin::Block => super::block::block(parser, streams, args),
+        RustBuiltin::Builtin => super::builtin::builtin(parser, streams, args),
         RustBuiltin::Contains => super::contains::contains(parser, streams, args),
+        RustBuiltin::Command => super::command::command(parser, streams, args),
         RustBuiltin::Echo => super::echo::echo(parser, streams, args),
         RustBuiltin::Emit => super::emit::emit(parser, streams, args),
         RustBuiltin::Exit => super::exit::exit(parser, streams, args),
+        RustBuiltin::Math => super::math::math(parser, streams, args),
         RustBuiltin::Pwd => super::pwd::pwd(parser, streams, args),
         RustBuiltin::Random => super::random::random(parser, streams, args),
         RustBuiltin::Realpath => super::realpath::realpath(parser, streams, args),
         RustBuiltin::Return => super::r#return::r#return(parser, streams, args),
+        RustBuiltin::Type => super::r#type::r#type(parser, streams, args),
         RustBuiltin::Wait => wait::wait(parser, streams, args),
+        RustBuiltin::Printf => printf::printf(parser, streams, args),
     }
 }
 

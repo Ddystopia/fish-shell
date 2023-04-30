@@ -1,3 +1,5 @@
+use std::{iter, slice};
+
 use crate::wchar::{wstr, WString};
 use widestring::utfstr::CharsUtf32;
 
@@ -80,38 +82,63 @@ fn test_to_wstring() {
     assert_eq!(i64::MAX.to_wstring(), "9223372036854775807");
 }
 
-/// A thing that a wide string can start with or end with.
-/// It must have a chars() method which returns a double-ended char iterator.
-pub trait CharPrefixSuffix {
-    type Iter: DoubleEndedIterator<Item = char>;
+/// A trait for a thing that can produce a double-ended, cloneable
+/// iterator of chars.
+/// Common implementations include char, &str, &wstr, &WString.
+pub trait IntoCharIter {
+    type Iter: DoubleEndedIterator<Item = char> + Clone;
     fn chars(self) -> Self::Iter;
 }
 
-impl CharPrefixSuffix for char {
+impl IntoCharIter for char {
     type Iter = std::iter::Once<char>;
     fn chars(self) -> Self::Iter {
         std::iter::once(self)
     }
 }
 
-impl<'a> CharPrefixSuffix for &'a str {
+impl<'a> IntoCharIter for &'a str {
     type Iter = std::str::Chars<'a>;
     fn chars(self) -> Self::Iter {
         str::chars(self)
     }
 }
 
-impl<'a> CharPrefixSuffix for &'a wstr {
+impl<'a> IntoCharIter for &'a [char] {
+    type Iter = iter::Copied<slice::Iter<'a, char>>;
+
+    fn chars(self) -> Self::Iter {
+        self.iter().copied()
+    }
+}
+
+impl<'a> IntoCharIter for &'a wstr {
     type Iter = CharsUtf32<'a>;
     fn chars(self) -> Self::Iter {
         wstr::chars(self)
     }
 }
 
-impl<'a> CharPrefixSuffix for &'a WString {
+impl<'a> IntoCharIter for &'a WString {
     type Iter = CharsUtf32<'a>;
     fn chars(self) -> Self::Iter {
         wstr::chars(self)
+    }
+}
+
+// Also support `str.chars()` itself.
+impl<'a> IntoCharIter for std::str::Chars<'a> {
+    type Iter = Self;
+    fn chars(self) -> Self::Iter {
+        self
+    }
+}
+
+// Also support `wstr.chars()` itself.
+impl<'a> IntoCharIter for CharsUtf32<'a> {
+    type Iter = Self;
+    fn chars(self) -> Self::Iter {
+        self
     }
 }
 
@@ -131,12 +158,47 @@ where
     true
 }
 
+/// Iterator type for splitting a wide string on a char.
+pub struct WStrCharSplitIter<'a> {
+    split: char,
+    chars: Option<&'a [char]>,
+}
+
+impl<'a> Iterator for WStrCharSplitIter<'a> {
+    type Item = &'a wstr;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let chars = self.chars?;
+        if let Some(idx) = chars.iter().position(|c| *c == self.split) {
+            let (prefix, rest) = chars.split_at(idx);
+            self.chars = Some(&rest[1..]);
+            return Some(wstr::from_char_slice(prefix));
+        } else {
+            self.chars = None;
+            return Some(wstr::from_char_slice(chars));
+        }
+    }
+}
+
 /// Convenience functions for WString.
 pub trait WExt {
     /// Access the chars of a WString or wstr.
     fn as_char_slice(&self) -> &[char];
 
-    /// \return the char at an index.
+    /// Return a char slice from a *char index*.
+    /// This is different from Rust string slicing, which takes a byte index.
+    fn slice_from(&self, start: usize) -> &wstr {
+        let chars = self.as_char_slice();
+        wstr::from_char_slice(&chars[start..])
+    }
+
+    /// Return the number of chars.
+    /// This is different from Rust string len, which returns the number of bytes.
+    fn char_count(&self) -> usize {
+        self.as_char_slice().len()
+    }
+
+    /// Return the char at an index.
     /// If the index is equal to the length, return '\0'.
     /// If the index exceeds the length, then panic.
     fn char_at(&self, index: usize) -> char {
@@ -148,20 +210,33 @@ pub trait WExt {
         }
     }
 
+    /// \return an iterator over substrings, split by a given char.
+    /// The split char is not included in the substrings.
+    fn split(&self, c: char) -> WStrCharSplitIter {
+        WStrCharSplitIter {
+            split: c,
+            chars: Some(self.as_char_slice()),
+        }
+    }
+
     /// \return the index of the first occurrence of the given char, or None.
     fn find_char(&self, c: char) -> Option<usize> {
         self.as_char_slice().iter().position(|&x| x == c)
     }
 
+    fn contains(&self, c: char) -> bool {
+        self.as_char_slice().iter().any(|&x| x == c)
+    }
+
     /// \return whether we start with a given Prefix.
     /// The Prefix can be a char, a &str, a &wstr, or a &WString.
-    fn starts_with<Prefix: CharPrefixSuffix>(&self, prefix: Prefix) -> bool {
+    fn starts_with<Prefix: IntoCharIter>(&self, prefix: Prefix) -> bool {
         iter_prefixes_iter(prefix.chars(), self.as_char_slice().iter().copied())
     }
 
     /// \return whether we end with a given Suffix.
     /// The Suffix can be a char, a &str, a &wstr, or a &WString.
-    fn ends_with<Suffix: CharPrefixSuffix>(&self, suffix: Suffix) -> bool {
+    fn ends_with<Suffix: IntoCharIter>(&self, suffix: Suffix) -> bool {
         iter_prefixes_iter(
             suffix.chars().rev(),
             self.as_char_slice().iter().copied().rev(),
@@ -184,7 +259,7 @@ impl WExt for wstr {
 #[cfg(test)]
 mod tests {
     use super::WExt;
-    use crate::wchar::{WString, L};
+    use crate::wchar::{wstr, WString, L};
     /// Write some tests.
     #[cfg(test)]
     fn test_find_char() {
@@ -212,5 +287,28 @@ mod tests {
         assert!(L!("abc").ends_with("bc"));
         assert!(L!("abc").ends_with(L!("bc")));
         assert!(L!("abc").ends_with(&WString::from_str("abc")));
+    }
+
+    #[test]
+    fn test_split() {
+        fn do_split(s: &wstr, c: char) -> Vec<&wstr> {
+            s.split(c).collect()
+        }
+        assert_eq!(do_split(L!(""), 'b'), &[""]);
+        assert_eq!(do_split(L!("abc"), 'b'), &["a", "c"]);
+        assert_eq!(do_split(L!("xxb"), 'x'), &["", "", "b"]);
+        assert_eq!(do_split(L!("bxxxb"), 'x'), &["b", "", "", "b"]);
+        assert_eq!(do_split(L!(""), 'x'), &[""]);
+        assert_eq!(do_split(L!("foo,bar,baz"), ','), &["foo", "bar", "baz"]);
+        assert_eq!(do_split(L!("foobar"), ','), &["foobar"]);
+        assert_eq!(do_split(L!("1,2,3,4,5"), ','), &["1", "2", "3", "4", "5"]);
+        assert_eq!(
+            do_split(L!("1,2,3,4,5,"), ','),
+            &["1", "2", "3", "4", "5", ""]
+        );
+        assert_eq!(
+            do_split(L!("Hello\nworld\nRust"), '\n'),
+            &["Hello", "world", "Rust"]
+        );
     }
 }

@@ -1,5 +1,7 @@
-use crate::ffi::{get_flog_file_fd, parse_util_unescape_wildcards, wildcard_match};
+use crate::ffi::{get_flog_file_fd, wildcard_match};
+use crate::parse_util::parse_util_unescape_wildcards;
 use crate::wchar::{widestrs, wstr, WString};
+use crate::wchar_ext::WExt;
 use crate::wchar_ffi::WCharToFFI;
 use std::io::Write;
 use std::os::unix::io::{FromRawFd, IntoRawFd, RawFd};
@@ -171,7 +173,7 @@ pub fn flog_impl(s: &str) {
 }
 
 macro_rules! FLOG {
-    ($category:ident, $($elem:expr),+) => {
+    ($category:ident, $($elem:expr),+ $(,)*) => {
         if crate::flog::categories::$category.enabled.load(std::sync::atomic::Ordering::Relaxed) {
             #[allow(unused_imports)]
             use crate::flog::{FloggableDisplay, FloggableDebug};
@@ -188,14 +190,30 @@ macro_rules! FLOG {
         }
     };
 }
-pub(crate) use FLOG;
+
+// TODO implement.
+macro_rules! FLOGF {
+    ($category:ident, $($elem:expr),+ $(,)*) => {
+        crate::flog::FLOG!($category, $($elem),*);
+    }
+}
+
+macro_rules! should_flog {
+    ($category:ident) => {
+        crate::flog::categories::$category
+            .enabled
+            .load(std::sync::atomic::Ordering::Relaxed)
+    };
+}
+
+pub(crate) use {should_flog, FLOG, FLOGF};
 
 /// For each category, if its name matches the wildcard, set its enabled to the given sense.
 fn apply_one_wildcard(wc_esc: &wstr, sense: bool) {
-    let wc = parse_util_unescape_wildcards(&wc_esc.to_ffi());
+    let wc = parse_util_unescape_wildcards(wc_esc);
     let mut match_found = false;
     for cat in categories::all_categories() {
-        if wildcard_match(&cat.name.to_ffi(), &wc, false) {
+        if wildcard_match(&cat.name.to_ffi(), &wc.to_ffi(), false) {
             cat.enabled.store(sense, Ordering::Relaxed);
             match_found = true;
         }
@@ -214,11 +232,11 @@ pub fn activate_flog_categories_by_pattern(wc_ptr: &wstr) {
             *c = '-';
         }
     }
-    for s in wc.as_char_slice().split(|c| *c == ',') {
-        if s.starts_with(&['-']) {
-            apply_one_wildcard(wstr::from_char_slice(&s[1..]), false);
+    for s in wc.split(',') {
+        if s.starts_with('-') {
+            apply_one_wildcard(s.slice_from(1), false);
         } else {
-            apply_one_wildcard(wstr::from_char_slice(s), true);
+            apply_one_wildcard(s, true);
         }
     }
 }

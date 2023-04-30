@@ -38,9 +38,9 @@ struct function_cmd_opts_t {
     bool shadow_scope = true;
     wcstring description;
     std::vector<event_description_t> events;
-    wcstring_list_t named_arguments;
-    wcstring_list_t inherit_vars;
-    wcstring_list_t wrap_targets;
+    std::vector<wcstring> named_arguments;
+    std::vector<wcstring> inherit_vars;
+    std::vector<wcstring> wrap_targets;
 };
 }  // namespace
 
@@ -229,13 +229,13 @@ static int validate_function_name(int argc, const wchar_t *const *argv, wcstring
 
 /// Define a function. Calls into `function.cpp` to perform the heavy lifting of defining a
 /// function.
-int builtin_function(parser_t &parser, io_streams_t &streams, const wcstring_list_t &c_args,
+int builtin_function(parser_t &parser, io_streams_t &streams, const std::vector<wcstring> &c_args,
                      const parsed_source_ref_t &source, const ast::block_statement_t &func_node) {
-    assert(source && "Missing source in builtin_function");
+    assert(source.has_value() && "Missing source in builtin_function");
     // The wgetopt function expects 'function' as the first argument. Make a new wcstring_list with
     // that property. This is needed because this builtin has a different signature than the other
     // builtins.
-    wcstring_list_t args = {L"function"};
+    std::vector<wcstring> args = {L"function"};
     args.insert(args.end(), c_args.begin(), c_args.end());
 
     null_terminated_array_t<wchar_t> argv_array(args);
@@ -280,7 +280,7 @@ int builtin_function(parser_t &parser, io_streams_t &streams, const wcstring_lis
     auto props = std::make_shared<function_properties_t>();
     props->shadow_scope = opts.shadow_scope;
     props->named_arguments = std::move(opts.named_arguments);
-    props->parsed_source = source;
+    props->parsed_source = source.clone();
     props->func_node = &func_node;
     props->description = opts.description;
     props->definition_file = parser.libdata().current_filename;

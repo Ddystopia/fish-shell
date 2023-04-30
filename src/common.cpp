@@ -33,6 +33,7 @@
 #include <memory>
 
 #include "common.h"
+#include "common.rs.h"
 #include "expand.h"
 #include "fallback.h"  // IWYU pragma: keep
 #include "flog.h"
@@ -57,7 +58,7 @@
 struct termios shell_modes;
 
 const wcstring g_empty_string{};
-const wcstring_list_t g_empty_string_list{};
+const std::vector<wcstring> g_empty_string_list{};
 
 /// This allows us to notice when we've forked.
 static relaxed_atomic_bool_t is_forked_proc{false};
@@ -119,17 +120,6 @@ long convert_digit(wchar_t d, int base) {
 /// Test whether the char is a valid hex digit as used by the `escape_string_*()` functions.
 static bool is_hex_digit(int c) { return std::strchr("0123456789ABCDEF", c) != nullptr; }
 
-/// This is a specialization of `convert_digit()` that only handles base 16 and only uppercase.
-static long convert_hex_digit(wchar_t d) {
-    if ((d <= L'9') && (d >= L'0')) {
-        return d - L'0';
-    } else if ((d <= L'Z') && (d >= L'A')) {
-        return 10 + d - L'A';
-    }
-
-    return -1;
-}
-
 bool is_windows_subsystem_for_linux() {
 #if defined(WSL)
     return true;
@@ -182,13 +172,14 @@ bool is_windows_subsystem_for_linux() {
 #ifdef HAVE_BACKTRACE_SYMBOLS
 // This function produces a stack backtrace with demangled function & method names. It is based on
 // https://gist.github.com/fmela/591333 but adapted to the style of the fish project.
-[[gnu::noinline]] static wcstring_list_t demangled_backtrace(int max_frames, int skip_levels) {
+[[gnu::noinline]] static std::vector<wcstring> demangled_backtrace(int max_frames,
+                                                                   int skip_levels) {
     void *callstack[128];
     const int n_max_frames = sizeof(callstack) / sizeof(callstack[0]);
     int n_frames = backtrace(callstack, n_max_frames);
     char **symbols = backtrace_symbols(callstack, n_frames);
     wchar_t text[1024];
-    wcstring_list_t backtrace_text;
+    std::vector<wcstring> backtrace_text;
 
     if (skip_levels + max_frames < n_frames) n_frames = skip_levels + max_frames;
 
@@ -217,7 +208,7 @@ bool is_windows_subsystem_for_linux() {
 [[gnu::noinline]] void show_stackframe(int frame_count, int skip_levels) {
     if (frame_count < 1) return;
 
-    wcstring_list_t bt = demangled_backtrace(frame_count, skip_levels + 2);
+    std::vector<wcstring> bt = demangled_backtrace(frame_count, skip_levels + 2);
     FLOG(error, L"Backtrace:\n" + join_strings(bt, L'\n') + L'\n');
 }
 
@@ -338,6 +329,8 @@ static wcstring str2wcs_internal(const char *in, const size_t in_len) {
             // Determine whether to encode this character with our crazy scheme.
             if (wc >= ENCODE_DIRECT_BASE && wc < ENCODE_DIRECT_BASE + 256) {
                 use_encode_direct = true;
+            } else if ((wc >= 0xD800 && wc <= 0xDFFF) || static_cast<uint32_t>(wc) >= 0x110000) {
+                use_encode_direct = true;
             } else if (wc == INTERNAL_SEPARATOR) {
                 use_encode_direct = true;
             } else if (ret == static_cast<size_t>(-2)) {
@@ -392,6 +385,15 @@ wcstring str2wcstring(const std::string &in, size_t len) {
 std::string wcs2string(const wcstring &input) { return wcs2string(input.data(), input.size()); }
 
 std::string wcs2string(const wchar_t *in, size_t len) {
+    if (len == 0) return std::string{};
+    std::string result;
+    wcs2string_appending(in, len, &result);
+    return result;
+}
+
+std::string wcs2zstring(const wcstring &input) { return wcs2zstring(input.data(), input.size()); }
+
+std::string wcs2zstring(const wchar_t *in, size_t len) {
     if (len == 0) return std::string{};
     std::string result;
     wcs2string_appending(in, len, &result);
@@ -738,38 +740,6 @@ static void escape_string_url(const wcstring &in, wcstring &out) {
     }
 }
 
-/// Reverse the effects of `escape_string_url()`. By definition the string has consist of just ASCII
-/// chars.
-static bool unescape_string_url(const wchar_t *in, wcstring *out) {
-    std::string result;
-    result.reserve(out->size());
-    for (wchar_t c = *in; c; c = *++in) {
-        if (c > 0x7F) return false;  // invalid character means we can't decode the string
-        if (c == '%') {
-            int c1 = in[1];
-            if (c1 == 0) return false;  // found unexpected end of string
-            if (c1 == '%') {
-                result.push_back('%');
-                in++;
-            } else {
-                int c2 = in[2];
-                if (c2 == 0) return false;  // string ended prematurely
-                long d1 = convert_digit(c1, 16);
-                if (d1 < 0) return false;
-                long d2 = convert_digit(c2, 16);
-                if (d2 < 0) return false;
-                result.push_back(16 * d1 + d2);
-                in += 2;
-            }
-        } else {
-            result.push_back(c);
-        }
-    }
-
-    *out = str2wcstring(result);
-    return true;
-}
-
 /// Escape a string in a fashion suitable for using as a fish var name. Store the result in out_str.
 static void escape_string_var(const wcstring &in, wcstring &out) {
     bool prev_was_hex_encoded = false;
@@ -799,46 +769,6 @@ static void escape_string_var(const wcstring &in, wcstring &out) {
     if (prev_was_hex_encoded) {
         out.push_back(L'_');
     }
-}
-
-/// Reverse the effects of `escape_string_var()`. By definition the string has consist of just ASCII
-/// chars.
-static bool unescape_string_var(const wchar_t *in, wcstring *out) {
-    std::string result;
-    result.reserve(out->size());
-    bool prev_was_hex_encoded = false;
-    for (wchar_t c = *in; c; c = *++in) {
-        if (c > 0x7F) return false;  // invalid character means we can't decode the string
-        if (c == '_') {
-            int c1 = in[1];
-            if (c1 == 0) {
-                if (prev_was_hex_encoded) break;
-                return false;  // found unexpected escape char at end of string
-            }
-            if (c1 == '_') {
-                result.push_back('_');
-                in++;
-            } else if (is_hex_digit(c1)) {
-                int c2 = in[2];
-                if (c2 == 0) return false;  // string ended prematurely
-                long d1 = convert_hex_digit(c1);
-                if (d1 < 0) return false;
-                long d2 = convert_hex_digit(c2);
-                if (d2 < 0) return false;
-                result.push_back(16 * d1 + d2);
-                in += 2;
-                prev_was_hex_encoded = true;
-            }
-            // No "else" clause because if the first char after an underscore is not another
-            // underscore or a valid hex character then the underscore is there to improve
-            // readability after we've encoded a character not valid in a var name.
-        } else {
-            result.push_back(c);
-        }
-    }
-
-    *out = str2wcstring(result);
-    return true;
 }
 
 wcstring escape_string_for_double_quotes(wcstring in) {
@@ -1119,12 +1049,6 @@ wcstring escape_string(const wcstring &in, escape_flags_t flags, escape_string_s
     return result;
 }
 
-/// Helper to return the last character in a string, or none.
-static maybe_t<wchar_t> string_last_char(const wcstring &str) {
-    if (str.empty()) return none();
-    return str.back();
-}
-
 /// Given a null terminated string starting with a backslash, read the escape as if it is unquoted,
 /// appending to result. Return the number of characters consumed, or none on error.
 maybe_t<size_t> read_unquoted_escape(const wchar_t *input, wcstring *result, bool allow_incomplete,
@@ -1318,320 +1242,30 @@ maybe_t<size_t> read_unquoted_escape(const wchar_t *input, wcstring *result, boo
     return in_pos;
 }
 
-/// Returns the unescaped version of input_str into output_str (by reference). Returns true if
-/// successful. If false, the contents of output_str are unchanged.
-static bool unescape_string_internal(const wchar_t *const input, const size_t input_len,
-                                     wcstring *output_str, unescape_flags_t flags) {
-    // Set up result string, which we'll swap with the output on success.
-    wcstring result;
-    result.reserve(input_len);
-
-    const bool unescape_special = static_cast<bool>(flags & UNESCAPE_SPECIAL);
-    const bool allow_incomplete = static_cast<bool>(flags & UNESCAPE_INCOMPLETE);
-    const bool ignore_backslashes = static_cast<bool>(flags & UNESCAPE_NO_BACKSLASHES);
-
-    // The positions of open braces.
-    std::vector<size_t> braces;
-    // The positions of variable expansions or brace ","s.
-    // We only read braces as expanders if there's a variable expansion or "," in them.
-    std::vector<size_t> vars_or_seps;
-    int brace_count = 0;
-
-    bool errored = false;
-    enum {
-        mode_unquoted,
-        mode_single_quotes,
-        mode_double_quotes,
-    } mode = mode_unquoted;
-
-    for (size_t input_position = 0; input_position < input_len && !errored; input_position++) {
-        const wchar_t c = input[input_position];
-        // Here's the character we'll append to result, or none() to suppress it.
-        maybe_t<wchar_t> to_append_or_none = c;
-        if (mode == mode_unquoted) {
-            switch (c) {
-                case L'\\': {
-                    if (!ignore_backslashes) {
-                        // Backslashes (escapes) are complicated and may result in errors, or
-                        // appending INTERNAL_SEPARATORs, so we have to handle them specially.
-                        auto escape_chars = read_unquoted_escape(
-                            input + input_position, &result, allow_incomplete, unescape_special);
-                        if (!escape_chars.has_value()) {
-                            // A none() return indicates an error.
-                            errored = true;
-                        } else {
-                            // Skip over the characters we read, minus one because the outer loop
-                            // will increment it.
-                            assert(*escape_chars > 0);
-                            input_position += *escape_chars - 1;
-                        }
-                        // We've already appended, don't append anything else.
-                        to_append_or_none = none();
-                    }
-                    break;
-                }
-                case L'~': {
-                    if (unescape_special && (input_position == 0)) {
-                        to_append_or_none = HOME_DIRECTORY;
-                    }
-                    break;
-                }
-                case L'%': {
-                    // Note that this only recognizes %self if the string is literally %self.
-                    // %self/foo will NOT match this.
-                    if (unescape_special && input_position == 0 &&
-                        !std::wcscmp(input, PROCESS_EXPAND_SELF_STR)) {
-                        to_append_or_none = PROCESS_EXPAND_SELF;
-                        input_position += PROCESS_EXPAND_SELF_STR_LEN - 1;  // skip over 'self's
-                    }
-                    break;
-                }
-                case L'*': {
-                    if (unescape_special) {
-                        // In general, this is ANY_STRING. But as a hack, if the last appended char
-                        // is ANY_STRING, delete the last char and store ANY_STRING_RECURSIVE to
-                        // reflect the fact that ** is the recursive wildcard.
-                        if (string_last_char(result) == ANY_STRING) {
-                            assert(!result.empty());
-                            result.resize(result.size() - 1);
-                            to_append_or_none = ANY_STRING_RECURSIVE;
-                        } else {
-                            to_append_or_none = ANY_STRING;
-                        }
-                    }
-                    break;
-                }
-                case L'?': {
-                    if (unescape_special && !feature_test(feature_flag_t::qmark_noglob)) {
-                        to_append_or_none = ANY_CHAR;
-                    }
-                    break;
-                }
-                case L'$': {
-                    if (unescape_special) {
-                        bool is_cmdsub =
-                            input_position + 1 < input_len && input[input_position + 1] == L'(';
-                        if (!is_cmdsub) {
-                            to_append_or_none = VARIABLE_EXPAND;
-                            vars_or_seps.push_back(input_position);
-                        }
-                    }
-                    break;
-                }
-                case L'{': {
-                    if (unescape_special) {
-                        brace_count++;
-                        to_append_or_none = BRACE_BEGIN;
-                        // We need to store where the brace *ends up* in the output.
-                        braces.push_back(result.size());
-                    }
-                    break;
-                }
-                case L'}': {
-                    if (unescape_special) {
-                        // HACK: The completion machinery sometimes hands us partial tokens.
-                        // We can't parse them properly, but it shouldn't hurt,
-                        // so we don't assert here.
-                        // See #4954.
-                        // assert(brace_count > 0 && "imbalanced brackets are a tokenizer error, we
-                        // shouldn't be able to get here");
-                        brace_count--;
-                        to_append_or_none = BRACE_END;
-                        if (!braces.empty()) {
-                            // HACK: To reduce accidental use of brace expansion, treat a brace
-                            // with zero or one items as literal input. See #4632. (The hack is
-                            // doing it here and like this.)
-                            if (vars_or_seps.empty() || vars_or_seps.back() < braces.back()) {
-                                result[braces.back()] = L'{';
-                                // We also need to turn all spaces back.
-                                for (size_t i = braces.back() + 1; i < result.size(); i++) {
-                                    if (result[i] == BRACE_SPACE) result[i] = L' ';
-                                }
-                                to_append_or_none = L'}';
-                            }
-
-                            // Remove all seps inside the current brace pair, so if we have a
-                            // surrounding pair we only get seps inside *that*.
-                            if (!vars_or_seps.empty()) {
-                                while (!vars_or_seps.empty() && vars_or_seps.back() > braces.back())
-                                    vars_or_seps.pop_back();
-                            }
-                            braces.pop_back();
-                        }
-                    }
-                    break;
-                }
-                case L',': {
-                    if (unescape_special && brace_count > 0) {
-                        to_append_or_none = BRACE_SEP;
-                        vars_or_seps.push_back(input_position);
-                    }
-                    break;
-                }
-                case L' ': {
-                    if (unescape_special && brace_count > 0) {
-                        to_append_or_none = BRACE_SPACE;
-                    }
-                    break;
-                }
-                case L'\'': {
-                    mode = mode_single_quotes;
-                    to_append_or_none =
-                        unescape_special ? maybe_t<wchar_t>(INTERNAL_SEPARATOR) : none();
-                    break;
-                }
-                case L'\"': {
-                    mode = mode_double_quotes;
-                    to_append_or_none =
-                        unescape_special ? maybe_t<wchar_t>(INTERNAL_SEPARATOR) : none();
-                    break;
-                }
-                default: {
-                    break;
-                }
-            }
-        } else if (mode == mode_single_quotes) {
-            if (c == L'\\') {
-                // A backslash may or may not escape something in single quotes.
-                switch (input[input_position + 1]) {
-                    case '\\':
-                    case L'\'': {
-                        to_append_or_none = input[input_position + 1];
-                        input_position += 1;  // skip over the backslash
-                        break;
-                    }
-                    case L'\0': {
-                        if (!allow_incomplete) {
-                            errored = true;
-                        } else {
-                            // PCA this line had the following cryptic comment: 'We may ever escape
-                            // a NULL character, but still appending a \ in case I am wrong.' Not
-                            // sure what it means or the importance of this.
-                            input_position += 1; /* Skip over the backslash */
-                            to_append_or_none = L'\\';
-                        }
-                        break;
-                    }
-                    default: {
-                        // Literal backslash that doesn't escape anything! Leave things alone; we'll
-                        // append the backslash itself.
-                        break;
-                    }
-                }
-            } else if (c == L'\'') {
-                to_append_or_none =
-                    unescape_special ? maybe_t<wchar_t>(INTERNAL_SEPARATOR) : none();
-                mode = mode_unquoted;
-            }
-        } else if (mode == mode_double_quotes) {
-            switch (c) {
-                case L'"': {
-                    mode = mode_unquoted;
-                    to_append_or_none =
-                        unescape_special ? maybe_t<wchar_t>(INTERNAL_SEPARATOR) : none();
-                    break;
-                }
-                case '\\': {
-                    switch (input[input_position + 1]) {
-                        case L'\0': {
-                            if (!allow_incomplete) {
-                                errored = true;
-                            } else {
-                                to_append_or_none = L'\0';
-                            }
-                            break;
-                        }
-                        case '\\':
-                        case L'$':
-                        case '"': {
-                            to_append_or_none = input[input_position + 1];
-                            input_position += 1; /* Skip over the backslash */
-                            break;
-                        }
-                        case '\n': {
-                            /* Swallow newline */
-                            to_append_or_none = none();
-                            input_position += 1; /* Skip over the backslash */
-                            break;
-                        }
-                        default: {
-                            /* Literal backslash that doesn't escape anything! Leave things alone;
-                             * we'll append the backslash itself */
-                            break;
-                        }
-                    }
-                    break;
-                }
-                case '$': {
-                    if (unescape_special) {
-                        to_append_or_none = VARIABLE_EXPAND_SINGLE;
-                        vars_or_seps.push_back(input_position);
-                    }
-                    break;
-                }
-                default: {
-                    break;
-                }
-            }
-        }
-
-        // Now maybe append the char.
-        if (to_append_or_none.has_value()) {
-            result.push_back(*to_append_or_none);
-        }
-    }
-
-    // Return the string by reference, and then success.
-    if (!errored) {
-        *output_str = std::move(result);
-    }
-    return !errored;
-}
-
 bool unescape_string_in_place(wcstring *str, unescape_flags_t escape_special) {
     assert(str != nullptr);
     wcstring output;
-    bool success = unescape_string_internal(str->c_str(), str->size(), &output, escape_special);
-    if (success) {
-        *str = std::move(output);
+    if (auto unescaped = unescape_string(str->c_str(), str->size(), escape_special)) {
+        *str = *unescaped;
+        return true;
     }
-    return success;
+    return false;
 }
 
-bool unescape_string(const wchar_t *input, size_t len, wcstring *output,
-                     unescape_flags_t escape_special, escape_string_style_t style) {
-    bool success = false;
-    switch (style) {
-        case STRING_STYLE_SCRIPT: {
-            success = unescape_string_internal(input, len, output, escape_special);
-            break;
-        }
-        case STRING_STYLE_URL: {
-            success = unescape_string_url(input, output);
-            break;
-        }
-        case STRING_STYLE_VAR: {
-            success = unescape_string_var(input, output);
-            break;
-        }
-        case STRING_STYLE_REGEX: {
-            // unescaping PCRE2 is not needed/supported, the PCRE2 engine is responsible for that
-            success = false;
-            break;
-        }
-    }
-    if (!success) output->clear();
-    return success;
+std::unique_ptr<wcstring> unescape_string(const wchar_t *input, unescape_flags_t escape_special,
+                                          escape_string_style_t style) {
+    return unescape_string(input, std::wcslen(input), escape_special, style);
 }
 
-bool unescape_string(const wchar_t *input, wcstring *output, unescape_flags_t escape_special,
-                     escape_string_style_t style) {
-    return unescape_string(input, std::wcslen(input), output, escape_special, style);
+std::unique_ptr<wcstring> unescape_string(const wchar_t *input, size_t len,
+                                          unescape_flags_t escape_special,
+                                          escape_string_style_t style) {
+    return rust_unescape_string(input, len, escape_special, style);
 }
 
-bool unescape_string(const wcstring &input, wcstring *output, unescape_flags_t escape_special,
-                     escape_string_style_t style) {
-    return unescape_string(input.c_str(), input.size(), output, escape_special, style);
+std::unique_ptr<wcstring> unescape_string(const wcstring &input, unescape_flags_t escape_special,
+                                          escape_string_style_t style) {
+    return unescape_string(input.c_str(), input.size(), escape_special, style);
 }
 
 wcstring format_size(long long sz) {
@@ -1739,24 +1373,6 @@ extern "C" {
 }
 }
 
-void set_main_thread() {
-    // Just call thread_id() once to force increment of thread_id.
-    uint64_t tid = thread_id();
-    assert(tid == 1 && "main thread should have thread ID 1");
-    (void)tid;
-}
-
-void configure_thread_assertions_for_testing() { thread_asserts_cfg_for_testing = true; }
-
-bool is_forked_child() { return is_forked_proc; }
-
-void setup_fork_guards() {
-    is_forked_proc = false;
-    static std::once_flag fork_guard_flag;
-    std::call_once(fork_guard_flag,
-                   [] { pthread_atfork(nullptr, nullptr, [] { is_forked_proc = true; }); });
-}
-
 void save_term_foreground_process_group() { initial_fg_process_group = tcgetpgrp(STDIN_FILENO); }
 
 void restore_term_foreground_process_group_for_exit() {
@@ -1770,32 +1386,6 @@ void restore_term_foreground_process_group_for_exit() {
     if (initial_fg_process_group > 0 && initial_fg_process_group != getpgrp()) {
         (void)signal(SIGTTOU, SIG_IGN);
         (void)tcsetpgrp(STDIN_FILENO, initial_fg_process_group);
-    }
-}
-
-bool is_main_thread() { return thread_id() == 1; }
-
-void assert_is_main_thread(const char *who) {
-    if (!likely(is_main_thread()) && !unlikely(thread_asserts_cfg_for_testing)) {
-        FLOGF(error, L"%s called off of main thread.", who);
-        FLOGF(error, L"Break on debug_thread_error to debug.");
-        debug_thread_error();
-    }
-}
-
-void assert_is_not_forked_child(const char *who) {
-    if (unlikely(is_forked_child())) {
-        FLOGF(error, L"%s called in a forked child.", who);
-        FLOG(error, L"Break on debug_thread_error to debug.");
-        debug_thread_error();
-    }
-}
-
-void assert_is_background_thread(const char *who) {
-    if (unlikely(is_main_thread()) && !unlikely(thread_asserts_cfg_for_testing)) {
-        FLOGF(error, L"%s called on the main thread (may block!).", who);
-        FLOG(error, L"Break on debug_thread_error to debug.");
-        debug_thread_error();
     }
 }
 

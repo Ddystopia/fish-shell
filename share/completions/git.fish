@@ -1231,7 +1231,7 @@ complete -f -c git -n '__fish_git_using_command branch' -s a -l all -d 'Lists bo
 complete -f -c git -n '__fish_git_using_command branch' -s r -l remotes -d 'List or delete (if used with -d) the remote-tracking branches.'
 complete -f -c git -n '__fish_git_using_command branch' -s t -l track -l track -d 'Track remote branch'
 complete -f -c git -n '__fish_git_using_command branch' -l no-track -d 'Do not track remote branch'
-complete -f -c git -n '__fish_git_using_command branch' -l set-upstream-to -d 'Set remote branch to track'
+complete -f -c git -n '__fish_git_using_command branch' -l set-upstream-to -d 'Set remote branch to track' -ka '(__fish_git_branches)'
 complete -f -c git -n '__fish_git_using_command branch' -l merged -d 'List branches that have been merged'
 complete -f -c git -n '__fish_git_using_command branch' -l no-merged -d 'List branches that have not been merged'
 complete -f -c git -n '__fish_git_using_command branch' -l unset-upstream -d 'Remove branch upstream information'
@@ -1956,9 +1956,10 @@ complete -F -c git -n '__fish_git_using_command restore' -n '__fish_git_contains
 # switch options
 complete -f -c git -n __fish_git_needs_command -a switch -d 'Switch to a branch'
 complete -f -c git -n '__fish_git_using_command switch' -ka '(__fish_git_unique_remote_branches)' -d 'Unique Remote Branch'
-complete -f -c git -n '__fish_git_using_command switch' -ka '(__fish_git_local_branches)'
-complete -f -c git -n '__fish_git_using_command switch' -r -s c -l create -d 'Create a new branch'
-complete -f -c git -n '__fish_git_using_command switch' -r -s C -l force-create -d 'Force create a new branch'
+complete -f -c git -n '__fish_git_using_command switch' -ka '(__fish_git_branches)'
+complete -f -c git -n '__fish_git_using_command switch' -s c -l create -d 'Create a new branch'
+complete -f -c git -n '__fish_git_using_command switch' -s C -l force-create -d 'Force create a new branch'
+complete -f -c git -n '__fish_git_using_command switch' -s d -l detach -rka '(__fish_git_recent_commits --all)'
 complete -f -c git -n '__fish_git_using_command switch' -s d -l detach -d 'Switch to a commit for inspection and discardable experiment' -rka '(__fish_git_refs)'
 complete -f -c git -n '__fish_git_using_command switch' -l guess -d 'Guess branch name from remote branch (default)'
 complete -f -c git -n '__fish_git_using_command switch' -l no-guess -d 'Do not guess branch name from remote branch'
@@ -2390,7 +2391,7 @@ for file in (path filter -xZ $PATH/git-* | path basename)
     and continue
 
     # Running `git foo` ends up running `git-foo`, so we need to ignore the `git-` here.
-    set -l cmd (string replace -r '^git-' '' -- $file)
+    set -l cmd (string replace -r '^git-' '' -- $file | string escape)
     complete -c git -f -n "__fish_git_using_command $cmd" -a "(__fish_git_complete_custom_command $cmd)"
     set -a __fish_git_custom_commands_completion $file
 end

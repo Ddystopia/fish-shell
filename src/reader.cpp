@@ -177,19 +177,19 @@ static constexpr long kHighlightTimeoutForExecutionMs = 250;
 /// These are deliberately leaked to avoid shutdown dtor registration.
 static debounce_t &debounce_autosuggestions() {
     const long kAutosuggestTimeoutMs = 500;
-    static auto res = new debounce_t(kAutosuggestTimeoutMs);
+    static auto res = new_debounce_t(kAutosuggestTimeoutMs);
     return *res;
 }
 
 static debounce_t &debounce_highlighting() {
     const long kHighlightTimeoutMs = 500;
-    static auto res = new debounce_t(kHighlightTimeoutMs);
+    static auto res = new_debounce_t(kHighlightTimeoutMs);
     return *res;
 }
 
 static debounce_t &debounce_history_pager() {
     const long kHistoryPagerTimeoutMs = 500;
-    static auto res = new debounce_t(kHistoryPagerTimeoutMs);
+    static auto res = new_debounce_t(kHistoryPagerTimeoutMs);
     return *res;
 }
 
@@ -575,7 +575,7 @@ struct autosuggestion_t {
     wcstring search_string{};
 
     // The list of completions which may need loading.
-    wcstring_list_t needs_load{};
+    std::vector<wcstring> needs_load{};
 
     // Whether the autosuggestion should be case insensitive.
     // This is true for file-generated autosuggestions, but not for history.
@@ -875,7 +875,7 @@ class reader_data_t : public std::enable_shared_from_this<reader_data_t> {
     void move_word(editable_line_t *el, bool move_right, bool erase, move_word_style_t style,
                    bool newv);
 
-    void run_input_command_scripts(const wcstring_list_t &cmds);
+    void run_input_command_scripts(const std::vector<wcstring> &cmds);
     maybe_t<char_event_t> read_normal_chars(readline_loop_state_t &rls);
     void handle_readline_command(readline_cmd_t cmd, readline_loop_state_t &rls);
 
@@ -1214,7 +1214,8 @@ void reader_data_t::paint_layout(const wchar_t *reason) {
 
     // Apply any selection.
     if (data.selection.has_value()) {
-        highlight_spec_t selection_color = {highlight_role_t::normal, highlight_role_t::selection};
+        highlight_spec_t selection_color = {highlight_role_t::selection,
+                                            highlight_role_t::selection};
         auto end = std::min(selection->stop, colors.size());
         for (size_t i = data.selection->start; i < end; i++) {
             colors.at(i) = selection_color;
@@ -1332,8 +1333,10 @@ void reader_data_t::fill_history_pager(bool new_search, history_search_direction
     }
     const wcstring &search_term = pager.search_field_line.text();
     auto shared_this = this->shared_from_this();
-    debounce_history_pager().perform(
-        [=]() { return history_pager_search(shared_this->history, direction, index, search_term); },
+    std::function<history_pager_result_t()> func = [=]() {
+        return history_pager_search(shared_this->history, direction, index, search_term);
+    };
+    std::function<void(const history_pager_result_t &)> completion =
         [=](const history_pager_result_t &result) {
             if (search_term != shared_this->pager.search_field_line.text())
                 return;  // Stale request.
@@ -1355,7 +1358,9 @@ void reader_data_t::fill_history_pager(bool new_search, history_search_direction
             shared_this->select_completion_in_direction(selection_motion_t::next, true);
             shared_this->super_highlight_me_plenty();
             shared_this->layout_and_repaint(L"history-pager");
-        });
+        };
+    auto &debouncer = debounce_history_pager();
+    debounce_perform_with_completion(debouncer, std::move(func), std::move(completion));
 }
 
 void reader_data_t::pager_selection_changed() {
@@ -1399,7 +1404,7 @@ maybe_t<abbrs_replacement_t> expand_replacer(SourceRange range, const wcstring &
 
     scoped_push<bool> not_interactive(&parser.libdata().is_interactive, false);
 
-    wcstring_list_t outputs{};
+    std::vector<wcstring> outputs{};
     int ret = exec_subshell(cmd, parser, outputs, false /* not apply_exit_status */);
     if (ret != STATUS_CMD_OK) {
         return none();
@@ -1421,13 +1426,13 @@ static std::vector<positioned_token_t> extract_tokens(const wcstring &str) {
     parse_tree_flags_t ast_flags = parse_flag_continue_after_error |
                                    parse_flag_accept_incomplete_tokens |
                                    parse_flag_leave_unterminated;
-    auto ast = ast::ast_t::parse(str, ast_flags);
+    auto ast = ast_parse(str, ast_flags);
 
     // Helper to check if a node is the command portion of an undecorated statement.
-    auto is_command = [&](const node_t *node) {
-        for (const node_t *cursor = node; cursor; cursor = cursor->parent) {
-            if (const auto *stmt = cursor->try_as<decorated_statement_t>()) {
-                if (!stmt->opt_decoration && node == &stmt->command) {
+    auto is_command = [&](const ast::node_t &node) {
+        for (auto cursor = node.ptr(); cursor->has_value(); cursor = cursor->parent()) {
+            if (const auto *stmt = cursor->try_as_decorated_statement()) {
+                if (!stmt->has_opt_decoration() && node.pointer_eq(*stmt->command().ptr())) {
                     return true;
                 }
             }
@@ -1437,10 +1442,11 @@ static std::vector<positioned_token_t> extract_tokens(const wcstring &str) {
 
     wcstring cmdsub_contents;
     std::vector<positioned_token_t> result;
-    traversal_t tv = ast.walk();
-    while (const node_t *node = tv.next()) {
+    for (auto tv = new_ast_traversal(*ast->top());;) {
+        auto node = tv->next();
+        if (!node->has_value()) break;
         // We are only interested in leaf nodes with source.
-        if (node->category != category_t::leaf) continue;
+        if (node->category() != category_t::leaf) continue;
         source_range_t r = node->source_range();
         if (r.length == 0) continue;
 
@@ -1463,7 +1469,7 @@ static std::vector<positioned_token_t> extract_tokens(const wcstring &str) {
 
         if (!has_cmd_subs) {
             // Common case of no command substitutions in this leaf node.
-            result.push_back(positioned_token_t{r, is_command(node)});
+            result.push_back(positioned_token_t{r, is_command(*node)});
         }
     }
     return result;
@@ -1546,7 +1552,7 @@ void reader_write_title(const wcstring &cmd, parser_t &parser, bool reset_cursor
         }
     }
 
-    wcstring_list_t lst;
+    std::vector<wcstring> lst;
     (void)exec_subshell(fish_title_command, parser, lst, false /* ignore exit status */);
     if (!lst.empty()) {
         wcstring title_line = L"\x1B]0;";
@@ -1568,7 +1574,7 @@ void reader_write_title(const wcstring &cmd, parser_t &parser, bool reset_cursor
 void reader_data_t::exec_mode_prompt() {
     mode_prompt_buff.clear();
     if (function_exists(MODE_PROMPT_FUNCTION_NAME, parser())) {
-        wcstring_list_t mode_indicator_list;
+        std::vector<wcstring> mode_indicator_list;
         exec_subshell(MODE_PROMPT_FUNCTION_NAME, parser(), mode_indicator_list, false);
         // We do not support multiple lines in the mode indicator, so just concatenate all of
         // them.
@@ -1599,7 +1605,7 @@ void reader_data_t::exec_prompt() {
 
         if (!conf.left_prompt_cmd.empty()) {
             // Status is ignored.
-            wcstring_list_t prompt_list;
+            std::vector<wcstring> prompt_list;
             // Historic compatibility hack.
             // If the left prompt function is deleted, then use a default prompt instead of
             // producing an error.
@@ -1613,7 +1619,7 @@ void reader_data_t::exec_prompt() {
         if (!conf.right_prompt_cmd.empty()) {
             if (function_exists(conf.right_prompt_cmd, parser())) {
                 // Status is ignored.
-                wcstring_list_t prompt_list;
+                std::vector<wcstring> prompt_list;
                 exec_subshell(conf.right_prompt_cmd, parser(), prompt_list, false);
                 // Right prompt does not support multiple lines, so just concatenate all of them.
                 for (const auto &i : prompt_list) {
@@ -2017,7 +2023,7 @@ static std::function<autosuggestion_t(void)> get_autosuggestion_performer(
 
         // Try normal completions.
         completion_request_options_t complete_flags = completion_request_options_t::autosuggest();
-        wcstring_list_t needs_load;
+        std::vector<wcstring> needs_load;
         completion_list_t completions = complete(search_string, complete_flags, ctx, &needs_load);
 
         autosuggestion_t result{};
@@ -2105,11 +2111,14 @@ void reader_data_t::update_autosuggestion() {
     // Clear the autosuggestion and kick it off in the background.
     FLOG(reader_render, L"Autosuggesting");
     autosuggestion.clear();
-    auto performer = get_autosuggestion_performer(parser(), el.text(), el.position(), history);
+    std::function<autosuggestion_t()> performer =
+        get_autosuggestion_performer(parser(), el.text(), el.position(), history);
     auto shared_this = this->shared_from_this();
-    debounce_autosuggestions().perform(performer, [shared_this](autosuggestion_t result) {
+    std::function<void(autosuggestion_t)> completion = [shared_this](autosuggestion_t result) {
         shared_this->autosuggest_completed(std::move(result));
-    });
+    };
+    debounce_perform_with_completion(debounce_autosuggestions(), std::move(performer),
+                                     std::move(completion));
 }
 
 // Accept any autosuggestion by replacing the command line with it. If full is true, take the whole
@@ -2825,11 +2834,14 @@ void reader_data_t::super_highlight_me_plenty() {
     in_flight_highlight_request = el->text();
 
     FLOG(reader_render, L"Highlighting");
-    auto highlight_performer = get_highlight_performer(parser(), *el, true /* io_ok */);
+    std::function<highlight_result_t()> highlight_performer =
+        get_highlight_performer(parser(), *el, true /* io_ok */);
     auto shared_this = this->shared_from_this();
-    debounce_highlighting().perform(highlight_performer, [shared_this](highlight_result_t result) {
+    std::function<void(highlight_result_t)> completion = [shared_this](highlight_result_t result) {
         shared_this->highlight_complete(std::move(result));
-    });
+    };
+    debounce_perform_with_completion(debounce_highlighting(), std::move(highlight_performer),
+                                     std::move(completion));
 }
 
 void reader_data_t::finish_highlighting_before_exec() {
@@ -3332,7 +3344,7 @@ static bool event_is_normal_char(const char_event_t &evt) {
 }
 
 /// Run a sequence of commands from an input binding.
-void reader_data_t::run_input_command_scripts(const wcstring_list_t &cmds) {
+void reader_data_t::run_input_command_scripts(const std::vector<wcstring> &cmds) {
     auto last_statuses = parser().get_last_statuses();
     for (const wcstring &cmd : cmds) {
         update_commandline_state();
@@ -3364,7 +3376,7 @@ maybe_t<char_event_t> reader_data_t::read_normal_chars(readline_loop_state_t &rl
     size_t limit = std::min(rls.nchars - command_line.size(), READAHEAD_MAX);
 
     using command_handler_t = inputter_t::command_handler_t;
-    command_handler_t normal_handler = [this](const wcstring_list_t &cmds) {
+    command_handler_t normal_handler = [this](const std::vector<wcstring> &cmds) {
         this->run_input_command_scripts(cmds);
     };
     command_handler_t empty_handler = {};
@@ -4739,16 +4751,16 @@ static int read_ni(parser_t &parser, int fd, const io_chain_t &io) {
 
     // Parse into an ast and detect errors.
     auto errors = new_parse_error_list();
-    auto ast = ast::ast_t::parse(str, parse_flag_none, &*errors);
-    bool errored = ast.errored();
+    auto ast = ast_parse(str, parse_flag_none, &*errors);
+    bool errored = ast->errored();
     if (!errored) {
-        errored = parse_util_detect_errors(ast, str, &*errors);
+        errored = parse_util_detect_errors(*ast, str, &*errors);
     }
     if (!errored) {
         // Construct a parsed source ref.
         // Be careful to transfer ownership, this could be a very large string.
-        parsed_source_ref_t ps = std::make_shared<parsed_source_t>(std::move(str), std::move(ast));
-        parser.eval(ps, io);
+        auto ps = new_parsed_source_ref(str, *ast);
+        parser.eval_parsed_source(*ps, io);
         return 0;
     } else {
         wcstring sb;

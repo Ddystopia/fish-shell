@@ -1,6 +1,6 @@
 // Support for exposing the terminal size.
 use crate::common::assert_sync;
-use crate::env::flags::EnvMode;
+use crate::env::EnvMode;
 use crate::ffi::{environment_t, parser_t, Repin};
 use crate::flog::FLOG;
 use crate::wchar::{WString, L};
@@ -32,7 +32,7 @@ mod termsize_ffi {
         pub fn termsize_handle_winch();
     }
 }
-use termsize_ffi::Termsize;
+pub use termsize_ffi::Termsize;
 
 // A counter which is incremented every SIGWINCH, or when the tty is otherwise invalidated.
 static TTY_TERMSIZE_GEN_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -42,7 +42,7 @@ static TTY_TERMSIZE_GEN_COUNT: AtomicU32 = AtomicU32::new(0);
 fn var_to_int_or(var: Option<WString>, default: isize) -> isize {
     match var {
         Some(s) => {
-            let proposed = fish_wcstoi(s.chars());
+            let proposed = fish_wcstoi(&s);
             if let Ok(proposed) = proposed {
                 proposed
             } else {
@@ -121,13 +121,9 @@ impl TermsizeData {
     fn current(&self) -> Termsize {
         // This encapsulates our ordering logic. If we have a termsize from a tty, use it; otherwise use
         // what we have seen from the environment.
-        if let Some(ts) = self.last_from_tty {
-            ts
-        } else if let Some(ts) = self.last_from_env {
-            ts
-        } else {
-            Termsize::defaults()
-        }
+        self.last_from_tty
+            .or(self.last_from_env)
+            .unwrap_or_else(Termsize::defaults)
     }
 
     /// Mark that our termsize is (for the time being) from the environment, not the tty.

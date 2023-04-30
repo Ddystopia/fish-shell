@@ -21,7 +21,7 @@ set. This is the real power of topics: you can wait for a sigchld signal OR a th
 */
 
 use crate::fd_readable_set::fd_readable_set_t;
-use crate::fds::{self, autoclose_pipes_t};
+use crate::fds::{self, AutoClosePipes};
 use crate::ffi::{self as ffi, c_int};
 use crate::flog::{FloggableDebug, FLOG};
 use crate::wchar::{widestrs, wstr, WString};
@@ -41,7 +41,7 @@ mod topic_monitor_ffi {
     /// Simple value type containing the values for a topic.
     /// This should be kept in sync with topic_t.
     #[derive(Default, Copy, Clone, Debug, PartialEq, Eq)]
-    struct generation_list_t {
+    pub struct generation_list_t {
         pub sighupint: u64,
         pub sigchld: u64,
         pub internal_exit: u64,
@@ -184,7 +184,7 @@ pub struct binary_semaphore_t {
     sem_: Pin<Box<UnsafeCell<libc::sem_t>>>,
 
     // Pipes used to emulate a semaphore, if not initialized.
-    pipes_: autoclose_pipes_t,
+    pipes_: AutoClosePipes,
 }
 
 impl binary_semaphore_t {
@@ -194,7 +194,7 @@ impl binary_semaphore_t {
         // sem_t does not have an initializer in Rust so we use zeroed().
         #[allow(unused_mut)]
         let mut sem_ = Pin::from(Box::new(UnsafeCell::new(unsafe { mem::zeroed() })));
-        let mut pipes_ = autoclose_pipes_t::default();
+        let mut pipes_ = AutoClosePipes::default();
         // sem_init always fails with ENOSYS on Mac and has an annoying deprecation warning.
         // On BSD sem_init uses a file descriptor under the hood which doesn't get CLOEXEC (see #7304).
         // So use fast semaphores on Linux only.
@@ -208,11 +208,11 @@ impl binary_semaphore_t {
             assert!(pipes.is_some(), "Failed to make pubsub pipes");
             pipes_ = pipes.unwrap();
 
-            // // Whoof. Thread Sanitizer swallows signals and replays them at its leisure, at the point
-            // // where instrumented code makes certain blocking calls. But tsan cannot interrupt a signal
-            // // call, so if we're blocked in read() (like the topic monitor wants to be!), we'll never
-            // // receive SIGCHLD and so deadlock. So if tsan is enabled, we mark our fd as non-blocking
-            // // (so reads will never block) and use select() to poll it.
+            // Whoof. Thread Sanitizer swallows signals and replays them at its leisure, at the point
+            // where instrumented code makes certain blocking calls. But tsan cannot interrupt a signal
+            // call, so if we're blocked in read() (like the topic monitor wants to be!), we'll never
+            // receive SIGCHLD and so deadlock. So if tsan is enabled, we mark our fd as non-blocking
+            // (so reads will never block) and use select() to poll it.
             if cfg!(feature = "FISH_TSAN_WORKAROUNDS") {
                 ffi::make_fd_nonblocking(c_int(pipes_.read.fd()));
             }
