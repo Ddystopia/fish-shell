@@ -947,10 +947,8 @@ pub const fn char_offset(base: char, offset: u32) -> char {
 }
 
 /// Exits without invoking destructors (via _exit), useful for code after fork.
-fn exit_without_destructors(code: i32) -> ! {
-    unsafe {
-        libc::_exit(code);
-    }
+pub fn exit_without_destructors(code: i32) -> ! {
+    unsafe { libc::_exit(code) };
 }
 
 /// Save the shell mode on startup so we can restore them on exit.
@@ -1594,6 +1592,7 @@ pub fn restore_term_foreground_process_group_for_exit() {
     // Note initial_fg_process_group == 0 is possible with Linux pid namespaces.
     // This is called during shutdown and from a signal handler. We don't bother to complain on
     // failure because doing so is unlikely to be noticed.
+    // Safety: All of getpgrp, signal, and tcsetpgrp are async-signal-safe.
     let initial_fg_process_group = INITIAL_FG_PROCESS_GROUP.load(Ordering::Relaxed);
     if initial_fg_process_group > 0 && initial_fg_process_group != unsafe { libc::getpgrp() } {
         unsafe {
@@ -1661,7 +1660,7 @@ pub fn is_windows_subsystem_for_linux() -> bool {
         // this check: if the environment variable FISH_NO_WSL_CHECK is present, this test
         // is bypassed. We intentionally do not include this in the error message because
         // it'll only allow fish to run but not to actually work. Here be dragons!
-        if env::var("FISH_NO_WSL_CHECK") == Err(env::VarError::NotPresent) {
+        if env::var_os("FISH_NO_WSL_CHECK").is_none() {
             crate::flog::FLOG!(
                 error,
                 concat!(
@@ -1892,38 +1891,34 @@ pub const fn assert_sync<T: Sync>() {}
 /// session. We err on the side of assuming it's not a console session. This approach isn't
 /// bullet-proof and that's OK.
 pub fn is_console_session() -> bool {
-    *CONSOLE_SESSION
-}
+    static IS_CONSOLE_SESSION: Lazy<bool> = Lazy::new(|| {
+        use std::os::unix::ffi::OsStrExt;
 
-static CONSOLE_SESSION: Lazy<bool> = Lazy::new(|| {
-    const path_max: usize = libc::PATH_MAX as _;
-    let mut tty_name: [u8; path_max] = [0; path_max];
-    if unsafe {
-        libc::ttyname_r(
-            STDIN_FILENO,
-            std::ptr::addr_of_mut!(tty_name).cast(),
-            path_max,
-        )
-    } != 0
-    {
-        return false;
-    }
-    // Test that the tty matches /dev/(console|dcons|tty[uv\d])
-    let len = "/dev/tty".len();
-    (
-    (
-        tty_name.starts_with(b"/dev/tty") &&
-            ([b'u', b'v'].contains(&tty_name[len]) || tty_name[len].is_ascii_digit())
-    ) ||
-    tty_name.starts_with(b"/dev/dcons\0") ||
-    tty_name.starts_with(b"/dev/console\0"))
-    // and that $TERM is simple, e.g. `xterm` or `vt100`, not `xterm-something`
-    && match env::var("TERM") {
-        Ok(term) => ["-", "sun-color"].contains(&term.as_str()),
-        Err(env::VarError::NotPresent) => true,
-        Err(_) => false,
-    }
-});
+        const PATH_MAX: usize = libc::PATH_MAX as usize;
+        let mut tty_name = [0u8; PATH_MAX];
+        unsafe {
+            if libc::ttyname_r(STDIN_FILENO, tty_name.as_mut_ptr().cast(), tty_name.len()) != 0 {
+                return false;
+            }
+        }
+        // Check if the tty matches /dev/(console|dcons|tty[uv\d])
+        const LEN: usize = b"/dev/tty".len();
+        (
+        (
+            tty_name.starts_with(b"/dev/tty") &&
+                ([b'u', b'v'].contains(&tty_name[LEN]) || tty_name[LEN].is_ascii_digit())
+        ) ||
+        tty_name.starts_with(b"/dev/dcons\0") ||
+        tty_name.starts_with(b"/dev/console\0"))
+        // and that $TERM is simple, e.g. `xterm` or `vt100`, not `xterm-something` or `sun-color`.
+        && match env::var_os("TERM") {
+            Some(term) => !term.as_bytes().contains(&b'-'),
+            None => true,
+        }
+    });
+
+    *IS_CONSOLE_SESSION
+}
 
 /// Asserts that a slice is alphabetically sorted by a [`&wstr`] `name` field.
 ///
