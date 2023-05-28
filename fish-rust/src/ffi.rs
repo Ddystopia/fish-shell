@@ -20,7 +20,9 @@ pub type wchar_t = u32;
 include_cpp! {
     #include "builtin.h"
     #include "common.h"
+    #include "complete.h"
     #include "env.h"
+    #include "env_universal_common.h"
     #include "event.h"
     #include "fallback.h"
     #include "fds.h"
@@ -28,12 +30,17 @@ include_cpp! {
     #include "flog.h"
     #include "function.h"
     #include "highlight.h"
+    #include "history.h"
     #include "io.h"
+    #include "input_common.h"
+    #include "kill.h"
     #include "parse_constants.h"
     #include "parser.h"
     #include "parse_util.h"
     #include "path.h"
     #include "proc.h"
+    #include "reader.h"
+    #include "screen.h"
     #include "tokenizer.h"
     #include "wildcard.h"
     #include "wutil.h"
@@ -53,6 +60,14 @@ include_cpp! {
     generate!("environment_t")
     generate!("env_stack_t")
     generate!("env_var_t")
+    generate!("env_universal_t")
+    generate!("env_universal_sync_result_t")
+    generate!("callback_data_t")
+    generate!("universal_notifier_t")
+    generate!("var_table_ffi_t")
+
+    generate!("event_list_ffi_t")
+
     generate!("make_pipes_ffi")
 
     generate!("get_flog_file_fd")
@@ -78,6 +93,7 @@ include_cpp! {
 
     generate!("output_stream_t")
     generate!("io_streams_t")
+    generate!("make_null_io_streams_ffi")
 
     generate_pod!("RustFFIJobList")
     generate_pod!("RustFFIProcList")
@@ -116,6 +132,23 @@ include_cpp! {
     generate!("path_get_paths_ffi")
 
     generate!("colorize_shell")
+    generate!("reader_status_count")
+    generate!("kill_entries_ffi")
+
+    generate!("get_history_variable_text_ffi")
+
+    generate!("is_interactive_session")
+    generate!("set_interactive_session")
+    generate!("screen_set_midnight_commander_hack")
+    generate!("screen_clear_layout_cache_ffi")
+    generate!("reader_schedule_prompt_repaint")
+    generate!("reader_change_history")
+    generate!("history_session_id")
+    generate!("reader_change_cursor_selection_mode")
+    generate!("reader_set_autosuggestion_enabled_ffi")
+    generate!("function_invalidate_path")
+    generate!("complete_invalidate_path")
+    generate!("update_wait_on_escape_ms_ffi")
 }
 
 impl parser_t {
@@ -173,6 +206,8 @@ impl parser_t {
         self.get_var_stack().set_var(name, value, flags)
     }
 }
+
+unsafe impl Send for env_universal_t {}
 
 impl environment_t {
     /// Helper to get a variable as a string, using the default flags.
@@ -287,6 +322,7 @@ pub trait Repin {
 // Implement Repin for our types.
 impl Repin for block_t {}
 impl Repin for env_stack_t {}
+impl Repin for env_universal_t {}
 impl Repin for io_streams_t {}
 impl Repin for job_t {}
 impl Repin for output_stream_t {}

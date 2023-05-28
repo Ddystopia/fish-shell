@@ -100,6 +100,7 @@ pub struct io_streams_t {
     pub out: output_stream_t,
     pub err: output_stream_t,
     pub out_is_redirected: bool,
+    pub err_is_redirected: bool,
 }
 
 impl io_streams_t {
@@ -107,12 +108,14 @@ impl io_streams_t {
         let out = output_stream_t(streams.as_mut().get_out().unpin());
         let err = output_stream_t(streams.as_mut().get_err().unpin());
         let out_is_redirected = streams.as_mut().get_out_redirected();
+        let err_is_redirected = streams.as_mut().get_err_redirected();
         let streams = streams.unpin();
         io_streams_t {
             streams,
             out,
             err,
             out_is_redirected,
+            err_is_redirected,
         }
     }
 
@@ -180,6 +183,7 @@ pub fn run_builtin(
         RustBuiltin::Random => super::random::random(parser, streams, args),
         RustBuiltin::Realpath => super::realpath::realpath(parser, streams, args),
         RustBuiltin::Return => super::r#return::r#return(parser, streams, args),
+        RustBuiltin::Test => super::test::test(parser, streams, args),
         RustBuiltin::Type => super::r#type::r#type(parser, streams, args),
         RustBuiltin::Wait => wait::wait(parser, streams, args),
         RustBuiltin::Printf => printf::printf(parser, streams, args),

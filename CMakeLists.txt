@@ -108,13 +108,13 @@ set(FISH_BUILTIN_SRCS
     src/builtins/jobs.cpp src/builtins/path.cpp
     src/builtins/read.cpp src/builtins/set.cpp
     src/builtins/set_color.cpp src/builtins/source.cpp src/builtins/status.cpp
-    src/builtins/string.cpp src/builtins/test.cpp src/builtins/ulimit.cpp
+    src/builtins/string.cpp src/builtins/ulimit.cpp
 )
 
 # List of other sources.
 set(FISH_SRCS
     src/ast.cpp src/autoload.cpp src/color.cpp src/common.cpp src/complete.cpp
-    src/env.cpp src/env_dispatch.cpp src/env_universal_common.cpp src/event.cpp
+    src/env.cpp src/env_universal_common.cpp src/event.cpp
     src/exec.cpp src/expand.cpp src/fallback.cpp src/fish_indent_common.cpp src/fish_version.cpp
     src/flog.cpp src/function.cpp src/highlight.cpp
     src/history.cpp src/history_file.cpp src/input.cpp src/input_common.cpp
