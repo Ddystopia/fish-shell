@@ -1970,7 +1970,7 @@ impl ReaderData {
                 break;
             }
         }
-        self.suppress_autosuggestion = true;
+        // self.suppress_autosuggestion = true;
         self.erase_substring(elt, pos..pos_end);
         self.update_buff_pos(elt, None);
     }
